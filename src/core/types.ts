@@ -143,19 +143,23 @@ export interface PublishResult {
   error?: string;
 }
 
-/** Clip length bounds enforced across the pipeline (project rule: 10–20s). */
-export const CLIP_MIN_SEC = 10;
-export const CLIP_MAX_SEC = 20;
+/** Default clip length bounds (seconds). Overridable via config (CLIPPER_CLIP_*). */
+export const CLIP_MIN_SEC = 15;
+export const CLIP_MAX_SEC = 60;
 
 /** Returns the duration of a candidate/clip window in seconds. */
 export function windowDurationSec(window: { startSec: number; endSec: number }): number {
   return window.endSec - window.startSec;
 }
 
-/** True if a window satisfies the 10–20s clip-length rule. */
-export function isValidClipLength(window: { startSec: number; endSec: number }): boolean {
+/** True if a window's duration falls within [minSec, maxSec] (defaults to the constants). */
+export function isValidClipLength(
+  window: { startSec: number; endSec: number },
+  minSec: number = CLIP_MIN_SEC,
+  maxSec: number = CLIP_MAX_SEC,
+): boolean {
   const d = windowDurationSec(window);
-  return d >= CLIP_MIN_SEC && d <= CLIP_MAX_SEC;
+  return d >= minSec && d <= maxSec;
 }
 
 /**

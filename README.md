@@ -22,21 +22,23 @@ in [`src/pipeline`](src/pipeline).
 
 ## How a clip is "triggered"
 
-Clip detection is **loudness-primary with a tiny-LLM confirm** — loud moments (crowd
-reactions, laughter, shouting) are the strongest signal that something clippable happened,
-and they're free to compute from the audio.
+Clip detection combines **loudness** (crowd reactions, laughter, shouting — free to compute
+from audio) with **speech density** and an **LLM judgement**, and only cuts on complete
+thoughts:
 
-1. The transcript is sliced into valid **10–20s** windows (the project clip-length rule,
-   enforced in [`src/core/types.ts`](src/core/types.ts)).
-2. Each window gets a **loudness score** (0–100) from the ffmpeg loudness timeline, relative
-   to the source's baseline.
-3. The loudest windows are shortlisted and a **small, cheap Groq model** gives a tiny
-   transcript rating (0–10) — the prompt is deliberately minimal so a small model works.
-4. The two signals are combined (default **50/50**, configurable), filtered by a minimum
-   score, de-overlapped, and the top N become clip candidates.
+1. **Coherent windows** — the transcript is sliced into candidate windows that **start and
+   end on sentence boundaries** (or pauses) and aim for a target length within
+   `[CLIPPER_CLIP_MIN_SEC, CLIPPER_CLIP_MAX_SEC]` (default 15–60s, target 30s). No more
+   mid-sentence 10-second cuts.
+2. **Speech gate** — windows without enough talking (`CLIPPER_MIN_WORDS_PER_SEC`) are dropped,
+   so pure applause/music/cheering never becomes a clip.
+3. **Pre-rank** on loudness × speech density, then a Groq model rates the shortlist for how
+   good a self-contained clip each would make.
+4. Loudness + LLM scores are combined (default **50/50**), thresholded on `CLIPPER_MIN_SCORE`,
+   de-overlapped, and the top N become clips.
 
-Both weights, the minimum score, and the candidate cap are configurable (see
-[Configuration](#configuration)).
+Everything here — weights, threshold, clip length, speech gate, candidate cap — is
+configurable (see [Configuration](#configuration)).
 
 ## Requirements
 
@@ -105,12 +107,12 @@ independently.
 
 ## Sources
 
-| Source | How it's fetched | Notes |
-| --- | --- | --- |
-| YouTube | yt-dlp | Fully headless; works on a VM as-is |
-| Twitch | yt-dlp | Fully headless; works on a VM as-is |
-| **Kick** | headless Chrome → yt-dlp | Needs Chrome installed (see below) |
-| Local file | none (read from disk) | `clipper run <path>` |
+| Source     | How it's fetched         | Notes                               |
+| ---------- | ------------------------ | ----------------------------------- |
+| YouTube    | yt-dlp                   | Fully headless; works on a VM as-is |
+| Twitch     | yt-dlp                   | Fully headless; works on a VM as-is |
+| **Kick**   | headless Chrome → yt-dlp | Needs Chrome installed (see below)  |
+| Local file | none (read from disk)    | `clipper run <path>`                |
 
 **Kick** is special. Kick serves VODs through the Amazon IVS player, which fetches media
 inside a WASM Web Worker and only exposes a **signed, short-lived** CloudFront playlist —
@@ -125,21 +127,22 @@ is short-lived, Kick downloads must complete promptly (fine for typical VOD leng
 All config is loaded from `.env` and validated in [`src/config/index.ts`](src/config/index.ts);
 see `.env.example` for the full list. Key options:
 
-| Env var                                                | Default                | Purpose                                                     |
-| ------------------------------------------------------ | ---------------------- | ----------------------------------------------------------- |
-| `GROQ_API_KEY`                                         | —                      | Whisper + research + caption                                |
-| `CLIPPER_RESEARCH_MODEL`                               | `llama-3.1-8b-instant` | Small Groq model for scoring; swap for any cheap Groq model |
-| `CLIPPER_CAPTION_MODEL`                                | `llama-3.1-8b-instant` | Small Groq model for captions                               |
-| `CLIPPER_SCORE_LOUDNESS_WEIGHT` / `_TRANSCRIPT_WEIGHT` | `0.5` / `0.5`          | Score blend                                                 |
-| `CLIPPER_MIN_SCORE`                                    | `55`                   | Threshold for a candidate                                   |
-| `CLIPPER_MAX_CANDIDATES`                               | `10`                   | Cap per source                                              |
-| `CLIPPER_MONITOR_CHANNELS`                             | —                      | Comma-separated channel URLs to poll                        |
-| `CLIPPER_MONITOR_INTERVAL_SEC`                         | `900`                  | Poll interval                                               |
-| `CLIPPER_DATA_DIR`                                     | OS default             | Where downloads / clips / queue live                        |
-| `LOG_FORMAT`                                           | `pretty`               | Set to `json` for production/log aggregation                |
+| Env var                                                | Default                   | Purpose                                                                     |
+| ------------------------------------------------------ | ------------------------- | --------------------------------------------------------------------------- |
+| `GROQ_API_KEY`                                         | —                         | Whisper + research + caption                                                |
+| `CLIPPER_RESEARCH_MODEL` / `CLIPPER_CAPTION_MODEL`     | `llama-3.3-70b-versatile` | Groq model for scoring/captions; drop to `llama-3.1-8b-instant` to cut cost |
+| `CLIPPER_CLIP_MIN_SEC` / `_MAX_SEC` / `_TARGET_SEC`    | `15` / `60` / `30`        | Clip length bounds + target (sentence-aligned)                              |
+| `CLIPPER_MIN_WORDS_PER_SEC`                            | `0.8`                     | Speech gate (drops applause/music)                                          |
+| `CLIPPER_SCORE_LOUDNESS_WEIGHT` / `_TRANSCRIPT_WEIGHT` | `0.5` / `0.5`             | Score blend                                                                 |
+| `CLIPPER_MIN_SCORE`                                    | `55`                      | Threshold for a candidate                                                   |
+| `CLIPPER_MAX_CANDIDATES`                               | `10`                      | Cap per source                                                              |
+| `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
+| `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                 | Channels to poll + interval                                                 |
+| `CLIPPER_DATA_DIR`                                     | OS default                | Where downloads / clips / queue live                                        |
+| `LOG_FORMAT`                                           | `pretty`                  | Set to `json` for production/log aggregation                                |
 
-**Tuning:** getting too few or too many clips is a config change, not a rebuild — adjust
-`CLIPPER_MIN_SCORE` and the loudness/transcript weight split in `.env` and restart.
+**Tuning:** clip quality is config, not a rebuild — adjust length (`CLIPPER_CLIP_*`),
+`CLIPPER_MIN_SCORE`, the loudness/transcript split, or `CLIPPER_CROP_X`, then restart.
 
 ## Running on a VM (24/7, automated)
 

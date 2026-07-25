@@ -4,10 +4,28 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { CommandRunner } from '../core/exec.js';
 import type { Caption, ClipCandidate, SourceVideo } from '../core/types.js';
-import { buildRenderArgs, buildVideoFilter, escapeFilterPath, FfmpegRenderer } from './index.js';
+import {
+  buildRenderArgs,
+  buildVideoFilter,
+  cropXExpr,
+  escapeFilterPath,
+  FfmpegRenderer,
+} from './index.js';
 
 const FONT = '/fonts/DejaVuSans.ttf';
 const TEXT = '/tmp/cap.txt';
+
+describe('cropXExpr', () => {
+  it('maps named + fractional focus to an x-offset expression', () => {
+    expect(cropXExpr('center')).toBe('(in_w-1080)*0.5');
+    expect(cropXExpr('left')).toBe('(in_w-1080)*0');
+    expect(cropXExpr('right')).toBe('(in_w-1080)*1');
+    expect(cropXExpr('0.25')).toBe('(in_w-1080)*0.25');
+  });
+  it('falls back to center for garbage', () => {
+    expect(cropXExpr('nonsense')).toBe('(in_w-1080)*0.5');
+  });
+});
 
 describe('escapeFilterPath', () => {
   it('forward-slashes and escapes the Windows drive colon', () => {

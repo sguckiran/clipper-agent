@@ -18,8 +18,10 @@ const schema = z.object({
   GROQ_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
   CLIPPER_WHISPER_MODEL: z.string().default('whisper-large-v3-turbo'),
-  CLIPPER_RESEARCH_MODEL: z.string().default('llama-3.1-8b-instant'),
-  CLIPPER_CAPTION_MODEL: z.string().default('llama-3.1-8b-instant'),
+  // Research + caption run on a capable Groq model for coherent scoring/captions.
+  // Swap for a smaller model (e.g. llama-3.1-8b-instant) to cut cost.
+  CLIPPER_RESEARCH_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  CLIPPER_CAPTION_MODEL: z.string().default('llama-3.3-70b-versatile'),
   // Audio is chunked to this length before transcription to stay under the Whisper
   // upload limit (~4.8 MB per chunk at 16 kHz mono 64 kbps for the default).
   CLIPPER_TRANSCRIBE_CHUNK_SEC: z.coerce.number().int().positive().default(600),
@@ -33,11 +35,19 @@ const schema = z.object({
   // applause/music/cheering (loud but no speech). ~0.8 keeps talking, drops silence.
   CLIPPER_MIN_WORDS_PER_SEC: z.coerce.number().min(0).default(0.8),
 
+  // Clip length. Windows are snapped to complete sentences, aiming for TARGET and
+  // kept within [MIN, MAX] seconds.
+  CLIPPER_CLIP_MIN_SEC: z.coerce.number().positive().default(15),
+  CLIPPER_CLIP_MAX_SEC: z.coerce.number().positive().default(60),
+  CLIPPER_CLIP_TARGET_SEC: z.coerce.number().positive().default(30),
+
   // Ingest
   CLIPPER_CLIP_MAX_HEIGHT: z.coerce.number().int().positive().default(1080),
 
   // Render — explicit caption font file (falls back to a per-OS default)
   CLIPPER_CAPTION_FONT: z.string().optional(),
+  // Horizontal focus of the 9:16 center crop: 'center' | 'left' | 'right' | 0..1.
+  CLIPPER_CROP_X: z.string().default('center'),
 
   // Channel monitor (auto-enqueue new VODs)
   CLIPPER_MONITOR_CHANNELS: z.string().default(''),
@@ -85,12 +95,19 @@ export interface Config {
     maxCandidates: number;
     minWordsPerSec: number;
   };
+  clip: {
+    minSec: number;
+    maxSec: number;
+    targetSec: number;
+  };
   ingest: {
     maxHeight: number;
   };
   render: {
     /** Explicit caption font file; undefined → per-OS default. */
     captionFont?: string;
+    /** Horizontal focus of the crop: 'center' | 'left' | 'right' | numeric 0..1. */
+    cropX: string;
   };
   monitor: {
     /** Channel/playlist URLs to poll for new VODs. */
@@ -135,11 +152,17 @@ export function getConfig(): Config {
       maxCandidates: env.CLIPPER_MAX_CANDIDATES,
       minWordsPerSec: env.CLIPPER_MIN_WORDS_PER_SEC,
     },
+    clip: {
+      minSec: env.CLIPPER_CLIP_MIN_SEC,
+      maxSec: env.CLIPPER_CLIP_MAX_SEC,
+      targetSec: env.CLIPPER_CLIP_TARGET_SEC,
+    },
     ingest: {
       maxHeight: env.CLIPPER_CLIP_MAX_HEIGHT,
     },
     render: {
       captionFont: env.CLIPPER_CAPTION_FONT,
+      cropX: env.CLIPPER_CROP_X,
     },
     monitor: {
       channels: env.CLIPPER_MONITOR_CHANNELS.split(',')

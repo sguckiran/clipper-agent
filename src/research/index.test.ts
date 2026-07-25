@@ -12,6 +12,7 @@ import {
   ScoringClipDetector,
   speechDensityScore,
   wordCount,
+  type ClipDetectorOptions,
   type TranscriptScorer,
 } from './index.js';
 
@@ -19,37 +20,38 @@ const segs = (spec: Array<[number, number, string]>): TranscriptSegment[] =>
   spec.map(([start, end, text]) => ({ start, end, text }));
 
 describe('buildWindows', () => {
-  it('emits the shortest valid window per anchor', () => {
+  const opts = { minSec: 10, maxSec: 30, targetSec: 12 };
+
+  it('builds sentence-aligned windows that reach the target and end on a sentence', () => {
     const windows = buildWindows(
       segs([
-        [0, 4, 'a'],
-        [4, 8, 'b'],
-        [8, 12, 'c'],
-        [12, 16, 'd'],
-        [16, 20, 'e'],
+        [0, 6, 'One two three.'],
+        [6, 14, 'Four five six seven.'],
+        [14, 20, 'Eight nine ten.'],
       ]),
+      opts,
     );
     expect(windows.map((w) => [w.startSec, w.endSec])).toEqual([
-      [0, 12],
-      [4, 16],
-      [8, 20],
+      [0, 14],
+      [6, 20],
     ]);
-    expect(windows[0]?.text).toBe('a b c');
+    expect(windows[0]?.text).toBe('One two three. Four five six seven.');
   });
 
-  it('caps an overlong segment to the max clip length', () => {
-    expect(buildWindows(segs([[0, 30, 'x']]))).toEqual([{ startSec: 0, endSec: 20, text: 'x' }]);
+  it('drops a run-on with no boundary within maxSec', () => {
+    expect(buildWindows(segs([[0, 40, 'a b c d e f no punctuation ever']]), opts)).toEqual([]);
   });
 
-  it('drops a too-short tail', () => {
-    expect(
-      buildWindows(
-        segs([
-          [0, 4, 'a'],
-          [4, 8, 'b'],
-        ]),
-      ),
-    ).toEqual([]);
+  it('uses a silence gap as a boundary when there is no punctuation', () => {
+    const windows = buildWindows(
+      segs([
+        [0, 6, 'one two three'],
+        [6, 12, 'four five six'],
+        [30, 36, 'seven eight'], // 18s gap before this
+      ]),
+      opts,
+    );
+    expect(windows.map((w) => [w.startSec, w.endSec])).toEqual([[0, 12]]);
   });
 });
 
@@ -152,17 +154,18 @@ describe('createChatScorer', () => {
 });
 
 describe('ScoringClipDetector', () => {
+  // One sentence-aligned window [0,20] for this fixture (no punctuation/gaps → the
+  // only boundary is the end of the transcript).
   const transcript: Transcript = {
     sourceId: 'src',
     language: 'en',
     segments: segs([
-      [0, 4, 'a'],
-      [4, 8, 'b'],
-      [8, 12, 'c'],
-      [12, 16, 'd'],
-      [16, 20, 'e'],
+      [0, 5, 'the crowd is going absolutely wild right now'],
+      [5, 10, 'i cannot believe what just happened here'],
+      [10, 15, 'that was the greatest play of the year'],
+      [15, 20, 'we will remember this one for a long time'],
     ]),
-    fullText: 'a b c d e',
+    fullText: 'the crowd is going absolutely wild ...',
   };
   const loudness: LoudnessTimeline = {
     sourceId: 'src',
@@ -175,20 +178,17 @@ describe('ScoringClipDetector', () => {
     })),
   };
 
-  it('returns non-overlapping candidates sorted by score', async () => {
+  const BOUNDS = { minSec: 10, maxSec: 30, targetSec: 12 };
+  const mk = (opts: Omit<ClipDetectorOptions, keyof typeof BOUNDS>): ScoringClipDetector =>
+    new ScoringClipDetector({ ...BOUNDS, ...opts });
+
+  it('returns coherent candidates sorted by score', async () => {
     const scorer: TranscriptScorer = {
       score: vi.fn().mockResolvedValue({ rating: 8, reason: 'lol' }),
     };
-    const det = new ScoringClipDetector({
-      scorer,
-      loudnessWeight: 0.5,
-      transcriptWeight: 0.5,
-      minScore: 0,
-      maxCandidates: 10,
-      minWordsPerSec: 0,
-    });
+    const det = mk({ scorer, minScore: 0, maxCandidates: 10, minWordsPerSec: 0 });
     const res = await det.detect(transcript, loudness);
-    expect(res.length).toBe(1); // all windows overlap -> one survives
+    expect(res.length).toBe(1);
     expect(res[0]?.reason).toBe('lol');
     expect(res[0]?.sourceId).toBe('src');
   });
@@ -197,14 +197,7 @@ describe('ScoringClipDetector', () => {
     const scorer: TranscriptScorer = {
       score: vi.fn().mockResolvedValue({ rating: 0, reason: '' }),
     };
-    const det = new ScoringClipDetector({
-      scorer,
-      loudnessWeight: 0.5,
-      transcriptWeight: 0.5,
-      minScore: 60,
-      maxCandidates: 10,
-      minWordsPerSec: 0,
-    });
+    const det = mk({ scorer, minScore: 60, maxCandidates: 10, minWordsPerSec: 0 });
     // loudness maxes ~100 -> combined ~50 < 60
     expect(await det.detect(transcript, loudness)).toEqual([]);
   });
@@ -213,24 +206,17 @@ describe('ScoringClipDetector', () => {
     const scorer: TranscriptScorer = {
       score: vi.fn().mockRejectedValue(new Error('boom')),
     };
-    const det = new ScoringClipDetector({
-      scorer,
-      loudnessWeight: 0.5,
-      transcriptWeight: 0.5,
-      minScore: 0,
-      maxCandidates: 10,
-      minWordsPerSec: 0,
-    });
+    const det = mk({ scorer, minScore: 0, maxCandidates: 10, minWordsPerSec: 0 });
     const res = await det.detect(transcript, loudness);
     expect(res.length).toBe(1);
     expect(res[0]?.reason).toMatch(/unavailable/);
   });
 
-  it('only LLM-scores the loudness shortlist', async () => {
+  it('only LLM-scores the shortlist', async () => {
     const scorer: TranscriptScorer = {
       score: vi.fn().mockResolvedValue({ rating: 5, reason: 'ok' }),
     };
-    const det = new ScoringClipDetector({
+    const det = mk({
       scorer,
       minScore: 0,
       maxCandidates: 1,
@@ -245,25 +231,18 @@ describe('ScoringClipDetector', () => {
     const scorer: TranscriptScorer = {
       score: vi.fn().mockResolvedValue({ rating: 10, reason: 'loud' }),
     };
-    // empty transcript text over the whole timeline = no speech, however loud
     const silent: Transcript = {
       sourceId: 'src',
       language: 'en',
       segments: segs([
-        [0, 4, ''],
-        [4, 8, ''],
-        [8, 12, ''],
-        [12, 16, ''],
-        [16, 20, ''],
+        [0, 5, ''],
+        [5, 10, ''],
+        [10, 15, ''],
+        [15, 20, ''],
       ]),
       fullText: '',
     };
-    const det = new ScoringClipDetector({
-      scorer,
-      minScore: 0,
-      maxCandidates: 10,
-      minWordsPerSec: 0.8,
-    });
+    const det = mk({ scorer, minScore: 0, maxCandidates: 10, minWordsPerSec: 0.8 });
     expect(await det.detect(silent, loudness)).toEqual([]);
     expect(scorer.score).not.toHaveBeenCalled(); // gated out before LLM scoring
   });
@@ -272,23 +251,8 @@ describe('ScoringClipDetector', () => {
     const scorer: TranscriptScorer = {
       score: vi.fn().mockResolvedValue({ rating: 8, reason: 'good' }),
     };
-    const talky: Transcript = {
-      sourceId: 'src',
-      language: 'en',
-      segments: segs([
-        [0, 4, 'one two three four'],
-        [4, 8, 'five six seven eight'],
-        [8, 12, 'nine ten eleven twelve'],
-      ]),
-      fullText: 'one two three four five six seven eight nine ten eleven twelve',
-    };
-    const det = new ScoringClipDetector({
-      scorer,
-      minScore: 0,
-      maxCandidates: 10,
-      minWordsPerSec: 0.8,
-    });
-    const res = await det.detect(talky, loudness);
+    const det = mk({ scorer, minScore: 0, maxCandidates: 10, minWordsPerSec: 0.8 });
+    const res = await det.detect(transcript, loudness);
     expect(res.length).toBeGreaterThan(0);
     expect(scorer.score).toHaveBeenCalled();
   });

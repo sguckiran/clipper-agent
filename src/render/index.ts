@@ -41,6 +41,15 @@ function captionY(position: NonNullable<Caption['style']>['position']): string {
   }
 }
 
+/** ffmpeg crop x-offset expression for a horizontal focus (0=left … 1=right). */
+export function cropXExpr(cropX: string): string {
+  const named: Record<string, number> = { left: 0, center: 0.5, right: 1 };
+  const frac = cropX in named ? named[cropX]! : Number.parseFloat(cropX);
+  const f = Number.isFinite(frac) ? Math.min(1, Math.max(0, frac)) : 0.5;
+  // in_w is the scaled input width; keep a 1080-wide slice at the requested focus.
+  return `(in_w-${OUT_W})*${f}`;
+}
+
 /**
  * Build the ffmpeg `-vf` filtergraph: reframe to 9:16, then burn the caption.
  *
@@ -49,10 +58,15 @@ function captionY(position: NonNullable<Caption['style']>['position']): string {
  * (commas, apostrophes, colons, `%`) can't break the filtergraph parser.
  * `expansion=none` keeps the caption fully literal.
  */
-export function buildVideoFilter(caption: Caption, fontFile: string, textFile: string): string {
+export function buildVideoFilter(
+  caption: Caption,
+  fontFile: string,
+  textFile: string,
+  cropX = 'center',
+): string {
   const parts = [
     `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase`,
-    `crop=${OUT_W}:${OUT_H}`,
+    `crop=${OUT_W}:${OUT_H}:${cropXExpr(cropX)}:0`,
   ];
   if (caption.text.trim().length > 0) {
     const style = caption.style ?? {};
@@ -107,6 +121,8 @@ export interface RendererOptions {
   encoder?: string;
   /** Explicit caption font file; falls back to config, then a per-OS default. */
   fontFile?: string;
+  /** Horizontal crop focus ('center'|'left'|'right'|0..1); falls back to config. */
+  cropX?: string;
   /** Fixed output directory; falls back to the data clips dir. */
   outDir?: string;
 }
@@ -116,6 +132,7 @@ export class FfmpegRenderer implements Renderer {
   private readonly ffmpeg: string;
   private readonly encoder: string;
   private readonly fontFile: string;
+  private readonly cropX: string;
   private readonly outDirOverride?: string;
   private readonly log = createLogger('render');
 
@@ -124,6 +141,7 @@ export class FfmpegRenderer implements Renderer {
     this.ffmpeg = opts.ffmpeg ?? ffmpegBinary();
     this.encoder = opts.encoder ?? preferredH264Encoder();
     this.fontFile = opts.fontFile ?? getConfig().render.captionFont ?? defaultCaptionFontFile();
+    this.cropX = opts.cropX ?? getConfig().render.cropX;
     this.outDirOverride = opts.outDir;
   }
 
@@ -136,7 +154,7 @@ export class FfmpegRenderer implements Renderer {
     if (caption.text.trim().length > 0) {
       await writeFile(captionFile, caption.text.trim(), 'utf8');
     }
-    const filter = buildVideoFilter(caption, this.fontFile, captionFile);
+    const filter = buildVideoFilter(caption, this.fontFile, captionFile, this.cropX);
     const args = buildRenderArgs(
       source.localPath,
       candidate.startSec,

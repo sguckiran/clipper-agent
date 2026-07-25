@@ -80,8 +80,9 @@ describe('ClippingPipeline', () => {
     expect(result.clips[0]?.caption).toEqual({ text: 'cap' });
   });
 
-  it('skips candidates that violate the 10–20s clip-length rule', async () => {
-    const deps = makeDeps([cand('ok', 0, 15), cand('tooShort', 0, 5), cand('tooLong', 0, 40)]);
+  it('skips candidates that violate the clip-length rule', async () => {
+    // default bounds are 15–60s
+    const deps = makeDeps([cand('ok', 0, 30), cand('tooShort', 0, 5), cand('tooLong', 0, 70)]);
     const result = await new ClippingPipeline(deps).run('https://twitch.tv/x');
 
     expect(result.clips.map((c) => c.candidateId)).toEqual(['ok']);

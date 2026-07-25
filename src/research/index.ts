@@ -18,7 +18,6 @@ import { createLogger } from '../core/logger.js';
 import {
   CLIP_MAX_SEC,
   CLIP_MIN_SEC,
-  isValidClipLength,
   type ClipCandidate,
   type LoudnessTimeline,
   type Transcript,
@@ -44,28 +43,70 @@ export interface WindowCandidate {
   text: string;
 }
 
-/** Slide over segments producing one valid 10–20s window per anchor segment. */
-export function buildWindows(segments: TranscriptSegment[]): WindowCandidate[] {
+export interface WindowOptions {
+  minSec: number;
+  maxSec: number;
+  /** Preferred length; growth stops at the first sentence end past this. */
+  targetSec: number;
+  /** A silence gap (s) that also counts as a sentence/topic boundary. */
+  gapSec?: number;
+}
+
+const SENTENCE_END = /[.!?…]['")\]]*$/;
+
+/** True if the text looks like the end of a sentence. */
+export function endsSentence(text: string): boolean {
+  return SENTENCE_END.test(text.trim());
+}
+
+/** A segment begins a clip if it opens a new sentence or follows a pause. */
+function startsNewSentence(segments: TranscriptSegment[], i: number, gapSec: number): boolean {
+  if (i === 0) return true;
+  const prev = segments[i - 1];
+  const cur = segments[i];
+  if (!prev || !cur) return false;
+  return endsSentence(prev.text) || cur.start - prev.end >= gapSec;
+}
+
+/**
+ * Build clip windows that are **coherent and target-length**: each starts at a
+ * sentence/topic boundary and ends at a sentence end (or a pause), growing toward
+ * `targetSec` and staying within `[minSec, maxSec]`. This replaces the old "cut the
+ * first 10s" behaviour that produced short, mid-sentence clips.
+ */
+export function buildWindows(
+  segments: TranscriptSegment[],
+  opts: WindowOptions = { minSec: CLIP_MIN_SEC, maxSec: CLIP_MAX_SEC, targetSec: 30 },
+): WindowCandidate[] {
+  const { minSec, maxSec, targetSec } = opts;
+  const gapSec = opts.gapSec ?? 1.0;
   const windows: WindowCandidate[] = [];
+
   for (let i = 0; i < segments.length; i++) {
+    if (!startsNewSentence(segments, i, gapSec)) continue;
     const start = segments[i]?.start ?? 0;
-    let text = '';
+    let acc = '';
+    let best: WindowCandidate | undefined;
+
     for (let j = i; j < segments.length; j++) {
       const seg = segments[j];
       if (!seg) break;
-      text = text ? `${text} ${seg.text}` : seg.text;
+      acc = acc ? `${acc} ${seg.text}` : seg.text;
       const dur = seg.end - start;
-      if (dur > CLIP_MAX_SEC) {
-        // A single/last segment overran the max; cap to a valid-length window.
-        const capped = { startSec: start, endSec: start + CLIP_MAX_SEC, text };
-        if (isValidClipLength(capped)) windows.push(capped);
-        break;
-      }
-      if (dur >= CLIP_MIN_SEC) {
-        windows.push({ startSec: start, endSec: seg.end, text });
-        break; // shortest valid window for this anchor
+      if (dur > maxSec) break;
+
+      const next = segments[j + 1];
+      const isBreak =
+        endsSentence(seg.text) ||
+        j === segments.length - 1 ||
+        (next ? next.start - seg.end >= gapSec : false);
+
+      if (dur >= minSec && isBreak) {
+        best = { startSec: start, endSec: seg.end, text: acc };
+        if (dur >= targetSec) break; // long enough; end on this sentence
       }
     }
+    if (best) windows.push(best);
   }
   return windows;
 }
@@ -196,6 +237,10 @@ export interface ClipDetectorOptions {
   maxCandidates?: number;
   /** Minimum words/second a window must have to be considered (speech gate). */
   minWordsPerSec?: number;
+  /** Clip length bounds / target (seconds); fall back to config. */
+  minSec?: number;
+  maxSec?: number;
+  targetSec?: number;
   /** dB above baseline that maps loudness to 100. */
   loudnessRangeDb?: number;
   /** Shortlist size (for LLM scoring) as a multiple of the candidate limit. */
@@ -209,18 +254,24 @@ export class ScoringClipDetector implements ClipDetector {
   private readonly minScore: number;
   private readonly maxCandidates: number;
   private readonly minWordsPerSec: number;
+  private readonly minSec: number;
+  private readonly maxSec: number;
+  private readonly targetSec: number;
   private readonly rangeDb: number;
   private readonly shortlistMultiplier: number;
   private readonly log = createLogger('research');
 
   constructor(opts: ClipDetectorOptions) {
-    const cfg = getConfig().scoring;
+    const cfg = getConfig();
     this.scorer = opts.scorer;
-    this.loudnessWeight = opts.loudnessWeight ?? cfg.loudnessWeight;
-    this.transcriptWeight = opts.transcriptWeight ?? cfg.transcriptWeight;
-    this.minScore = opts.minScore ?? cfg.minScore;
-    this.maxCandidates = opts.maxCandidates ?? cfg.maxCandidates;
-    this.minWordsPerSec = opts.minWordsPerSec ?? cfg.minWordsPerSec;
+    this.loudnessWeight = opts.loudnessWeight ?? cfg.scoring.loudnessWeight;
+    this.transcriptWeight = opts.transcriptWeight ?? cfg.scoring.transcriptWeight;
+    this.minScore = opts.minScore ?? cfg.scoring.minScore;
+    this.maxCandidates = opts.maxCandidates ?? cfg.scoring.maxCandidates;
+    this.minWordsPerSec = opts.minWordsPerSec ?? cfg.scoring.minWordsPerSec;
+    this.minSec = opts.minSec ?? cfg.clip.minSec;
+    this.maxSec = opts.maxSec ?? cfg.clip.maxSec;
+    this.targetSec = opts.targetSec ?? cfg.clip.targetSec;
     this.rangeDb = opts.loudnessRangeDb ?? 12;
     this.shortlistMultiplier = opts.shortlistMultiplier ?? 4;
   }
@@ -233,7 +284,11 @@ export class ScoringClipDetector implements ClipDetector {
     const limit = opts.limit ?? this.maxCandidates;
     const minScore = opts.minScore ?? this.minScore;
 
-    const windows = buildWindows(transcript.segments);
+    const windows = buildWindows(transcript.segments, {
+      minSec: this.minSec,
+      maxSec: this.maxSec,
+      targetSec: this.targetSec,
+    });
     const meanRms = createLoudnessLookup(loudness);
     const scored = windows.map((w) => {
       const dur = Math.max(w.endSec - w.startSec, 0.001);

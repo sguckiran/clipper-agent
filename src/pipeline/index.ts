@@ -7,6 +7,7 @@
  * fakes. Publishing is intentionally out of scope — the pipeline stops at rendered
  * clips on disk.
  */
+import { getConfig } from '../config/index.js';
 import type {
   CaptionWriter,
   ClipDetector,
@@ -62,9 +63,10 @@ export class ClippingPipeline {
     const candidates = await this.deps.detector.detect(transcript, loudness, opts);
     this.log.info({ candidates: candidates.length }, 'candidates detected');
 
+    const { minSec, maxSec } = getConfig().clip;
     const clips: Clip[] = [];
     for (const candidate of candidates) {
-      if (!isValidClipLength(candidate)) {
+      if (!isValidClipLength(candidate, minSec, maxSec)) {
         this.log.warn({ id: candidate.id }, 'skipping candidate: violates clip-length rule');
         continue;
       }

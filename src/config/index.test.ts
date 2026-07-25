@@ -31,14 +31,16 @@ describe('config', () => {
     resetConfigCache();
   });
 
-  it('applies small-model + scoring defaults', () => {
+  it('applies model + scoring + clip defaults', () => {
     const cfg = getConfig();
-    expect(cfg.llm.researchModel).toBe('llama-3.1-8b-instant');
-    expect(cfg.llm.captionModel).toBe('llama-3.1-8b-instant');
+    expect(cfg.llm.researchModel).toBe('llama-3.3-70b-versatile');
+    expect(cfg.llm.captionModel).toBe('llama-3.3-70b-versatile');
     expect(cfg.scoring.loudnessWeight).toBe(0.5);
     expect(cfg.scoring.transcriptWeight).toBe(0.5);
     expect(cfg.scoring.minScore).toBe(55);
     expect(cfg.scoring.maxCandidates).toBe(10);
+    expect(cfg.clip).toEqual({ minSec: 15, maxSec: 60, targetSec: 30 });
+    expect(cfg.render.cropX).toBe('center');
   });
 
   it('coerces numeric env vars from strings', () => {
