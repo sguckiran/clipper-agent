@@ -11,10 +11,13 @@
  *   queue    list queued jobs
  *   prompts  inspect the prompt store
  */
+import { existsSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { execa } from 'execa';
 import { getConfig } from '../config/index.js';
 import type { DetectOptions } from '../core/contracts.js';
 import { createLogger } from '../core/logger.js';
+import { sourceFromLocalFile } from '../ingest/index.js';
 import { dataPaths } from '../core/paths.js';
 import { ffmpegBinary, platformInfo, preferredH264Encoder, ytDlpBinary } from '../core/platform.js';
 import { FileJobQueue } from '../core/queue.js';
@@ -102,13 +105,18 @@ function firstPositional(args: string[]): string | undefined {
 }
 
 async function run(args: string[]): Promise<number> {
-  const url = firstPositional(args);
-  if (!url) {
-    log.error('usage: clipper run <url> [--limit N] [--min-score N]');
+  const target = firstPositional(args);
+  if (!target) {
+    log.error('usage: clipper run <url|file> [--limit N] [--min-score N]');
     return 1;
   }
   const pipeline = createDefaultPipeline();
-  const { clips } = await pipeline.run(url, detectOptionsFromArgs(args));
+  const opts = detectOptionsFromArgs(args);
+  // A local file path skips the download and runs the pipeline directly on it.
+  const isLocalFile = existsSync(target) && statSync(target).isFile();
+  const { clips } = isLocalFile
+    ? await pipeline.runSource(sourceFromLocalFile(resolve(target)), opts)
+    : await pipeline.run(target, opts);
   if (clips.length === 0) {
     log.info('no clips produced (nothing cleared the score threshold)');
   } else {

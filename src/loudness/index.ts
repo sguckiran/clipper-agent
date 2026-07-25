@@ -23,6 +23,7 @@ export function buildLoudnessArgs(input: string): string[] {
   return [
     '-hide_banner',
     '-nostats',
+    '-vn', // audio-only: skip (potentially very expensive) video decoding
     '-i',
     input,
     '-filter_complex',

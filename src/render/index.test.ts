@@ -1,25 +1,35 @@
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import type { CommandRunner } from '../core/exec.js';
 import type { Caption, ClipCandidate, SourceVideo } from '../core/types.js';
-import { buildRenderArgs, buildVideoFilter, escapeDrawText, FfmpegRenderer } from './index.js';
+import { buildRenderArgs, buildVideoFilter, escapeFilterPath, FfmpegRenderer } from './index.js';
 
-describe('escapeDrawText', () => {
-  it('escapes backslashes, quotes and percent signs', () => {
-    expect(escapeDrawText("it's 100% \\ done")).toBe("it\\'s 100\\% \\\\ done");
+const FONT = '/fonts/DejaVuSans.ttf';
+const TEXT = '/tmp/cap.txt';
+
+describe('escapeFilterPath', () => {
+  it('forward-slashes and escapes the Windows drive colon', () => {
+    expect(escapeFilterPath('C:\\Windows\\Fonts\\arial.ttf')).toBe('C\\:/Windows/Fonts/arial.ttf');
+    expect(escapeFilterPath('/usr/share/fonts/x.ttf')).toBe('/usr/share/fonts/x.ttf');
   });
 });
 
 describe('buildVideoFilter', () => {
-  it('reframes to vertical and burns the caption', () => {
-    const filter = buildVideoFilter({ text: 'WOW' });
+  it('reframes to vertical and burns the caption via fontfile + textfile', () => {
+    const filter = buildVideoFilter({ text: 'WOW' }, FONT, TEXT);
     expect(filter).toContain('scale=1080:1920:force_original_aspect_ratio=increase');
     expect(filter).toContain('crop=1080:1920');
-    expect(filter).toContain("drawtext=text='WOW'");
+    expect(filter).toContain("drawtext=fontfile='/fonts/DejaVuSans.ttf'");
+    expect(filter).toContain("textfile='/tmp/cap.txt'");
+    expect(filter).toContain('expansion=none');
+    // caption text itself is never inlined into the filtergraph
+    expect(filter).not.toContain('WOW');
   });
 
   it('omits drawtext when the caption is empty', () => {
-    expect(buildVideoFilter({ text: '   ' })).not.toContain('drawtext');
+    expect(buildVideoFilter({ text: '   ' }, FONT, TEXT)).not.toContain('drawtext');
   });
 
   it('honours style overrides', () => {
@@ -27,7 +37,7 @@ describe('buildVideoFilter', () => {
       text: 'hi',
       style: { fontSizePx: 72, color: 'yellow', position: 'top' },
     };
-    const filter = buildVideoFilter(caption);
+    const filter = buildVideoFilter(caption, FONT, TEXT);
     expect(filter).toContain('fontsize=72');
     expect(filter).toContain('fontcolor=yellow');
     expect(filter).toContain('y=text_h');
@@ -59,7 +69,8 @@ describe('buildRenderArgs', () => {
 });
 
 describe('FfmpegRenderer', () => {
-  it('renders a clip and returns rendered metadata', async () => {
+  it('writes the caption sidecar, renders a clip and returns metadata', async () => {
+    const outDir = await mkdtemp(join(tmpdir(), 'clipper-clips-'));
     const runner: CommandRunner = {
       run: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }),
     };
@@ -85,25 +96,27 @@ describe('FfmpegRenderer', () => {
       runner,
       ffmpeg: 'ffmpeg',
       encoder: 'libx264',
-      outDir: '/clips',
+      fontFile: FONT,
+      outDir,
     });
-    const clip = await renderer.render(source, candidate, { text: 'LETS GO' });
+    // caption with a comma + apostrophe would break inline drawtext parsing
+    const clip = await renderer.render(source, candidate, { text: "Wow, it's wild" });
 
     expect(runner.run).toHaveBeenCalledOnce();
     const [bin, args] = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(bin).toBe('ffmpeg');
     expect(args).toContain('/dl/src.mp4');
-    expect(args).toContain('-c:v');
-    expect(args[args.length - 1]).toBe(join('/clips', 'src-30.0.mp4'));
+    expect(args[args.length - 1]).toBe(join(outDir, 'src-30.0.mp4'));
+
+    // the caption is written verbatim to the sidecar file
+    expect(await readFile(join(outDir, 'src-30.0.caption.txt'), 'utf8')).toBe("Wow, it's wild");
 
     expect(clip).toMatchObject({
       id: 'clip-src-30.0',
       candidateId: 'src-30.0',
       sourceId: 'src',
-      startSec: 30,
-      endSec: 45,
       status: 'rendered',
-      renderedPath: join('/clips', 'src-30.0.mp4'),
+      renderedPath: join(outDir, 'src-30.0.mp4'),
     });
   });
 });

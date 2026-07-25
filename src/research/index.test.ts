@@ -5,10 +5,13 @@ import {
   buildWindows,
   combineScores,
   createChatScorer,
+  createLoudnessLookup,
   dedupeOverlapping,
   loudnessScore,
   parseScore,
   ScoringClipDetector,
+  speechDensityScore,
+  wordCount,
   type TranscriptScorer,
 } from './index.js';
 
@@ -50,6 +53,23 @@ describe('buildWindows', () => {
   });
 });
 
+describe('wordCount', () => {
+  it('counts whitespace-separated words', () => {
+    expect(wordCount('  hello   there  world ')).toBe(3);
+    expect(wordCount('')).toBe(0);
+    expect(wordCount('   ')).toBe(0);
+  });
+});
+
+describe('speechDensityScore', () => {
+  it('maps words/sec to 0-100 against the target', () => {
+    expect(speechDensityScore(3, 3)).toBe(100);
+    expect(speechDensityScore(1.5, 3)).toBe(50);
+    expect(speechDensityScore(0, 3)).toBe(0);
+    expect(speechDensityScore(6, 3)).toBe(100); // clamped
+  });
+});
+
 describe('loudnessScore', () => {
   it('maps relative loudness to 0-100 around 50 at baseline', () => {
     expect(loudnessScore(-40, -40, 12)).toBe(50);
@@ -67,6 +87,29 @@ describe('combineScores', () => {
   });
   it('is zero when weights are zero', () => {
     expect(combineScores(80, 40, 0, 0)).toBe(0);
+  });
+});
+
+describe('createLoudnessLookup', () => {
+  const timeline = {
+    sourceId: 's',
+    baselineRms: -40,
+    samples: Array.from({ length: 20 }, (_, t) => ({
+      start: t,
+      end: t + 1,
+      rms: t >= 8 ? -10 : -40,
+      peak: 0,
+    })),
+  };
+
+  it('averages sample rms across a window', () => {
+    const lookup = createLoudnessLookup(timeline);
+    expect(lookup(8, 20)).toBe(-10);
+    expect(lookup(0, 12)).toBe(-30); // 8×-40 + 4×-10 over 12
+  });
+
+  it('returns the baseline for a window with no samples', () => {
+    expect(createLoudnessLookup(timeline)(100, 110)).toBe(-40);
   });
 });
 
@@ -142,6 +185,7 @@ describe('ScoringClipDetector', () => {
       transcriptWeight: 0.5,
       minScore: 0,
       maxCandidates: 10,
+      minWordsPerSec: 0,
     });
     const res = await det.detect(transcript, loudness);
     expect(res.length).toBe(1); // all windows overlap -> one survives
@@ -159,6 +203,7 @@ describe('ScoringClipDetector', () => {
       transcriptWeight: 0.5,
       minScore: 60,
       maxCandidates: 10,
+      minWordsPerSec: 0,
     });
     // loudness maxes ~100 -> combined ~50 < 60
     expect(await det.detect(transcript, loudness)).toEqual([]);
@@ -174,6 +219,7 @@ describe('ScoringClipDetector', () => {
       transcriptWeight: 0.5,
       minScore: 0,
       maxCandidates: 10,
+      minWordsPerSec: 0,
     });
     const res = await det.detect(transcript, loudness);
     expect(res.length).toBe(1);
@@ -189,8 +235,61 @@ describe('ScoringClipDetector', () => {
       minScore: 0,
       maxCandidates: 1,
       shortlistMultiplier: 1,
+      minWordsPerSec: 0,
     });
     await det.detect(transcript, loudness);
     expect(scorer.score).toHaveBeenCalledTimes(1);
+  });
+
+  it('drops windows without enough speech (applause/music)', async () => {
+    const scorer: TranscriptScorer = {
+      score: vi.fn().mockResolvedValue({ rating: 10, reason: 'loud' }),
+    };
+    // empty transcript text over the whole timeline = no speech, however loud
+    const silent: Transcript = {
+      sourceId: 'src',
+      language: 'en',
+      segments: segs([
+        [0, 4, ''],
+        [4, 8, ''],
+        [8, 12, ''],
+        [12, 16, ''],
+        [16, 20, ''],
+      ]),
+      fullText: '',
+    };
+    const det = new ScoringClipDetector({
+      scorer,
+      minScore: 0,
+      maxCandidates: 10,
+      minWordsPerSec: 0.8,
+    });
+    expect(await det.detect(silent, loudness)).toEqual([]);
+    expect(scorer.score).not.toHaveBeenCalled(); // gated out before LLM scoring
+  });
+
+  it('keeps windows with dense speech through the gate', async () => {
+    const scorer: TranscriptScorer = {
+      score: vi.fn().mockResolvedValue({ rating: 8, reason: 'good' }),
+    };
+    const talky: Transcript = {
+      sourceId: 'src',
+      language: 'en',
+      segments: segs([
+        [0, 4, 'one two three four'],
+        [4, 8, 'five six seven eight'],
+        [8, 12, 'nine ten eleven twelve'],
+      ]),
+      fullText: 'one two three four five six seven eight nine ten eleven twelve',
+    };
+    const det = new ScoringClipDetector({
+      scorer,
+      minScore: 0,
+      maxCandidates: 10,
+      minWordsPerSec: 0.8,
+    });
+    const res = await det.detect(talky, loudness);
+    expect(res.length).toBeGreaterThan(0);
+    expect(scorer.score).toHaveBeenCalled();
   });
 });

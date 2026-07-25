@@ -46,6 +46,12 @@ export class ClippingPipeline {
   async run(url: string, opts: PipelineOptions = {}): Promise<PipelineResult> {
     this.log.info({ url }, 'pipeline start');
     const source = await this.deps.downloader.download(url);
+    return this.runSource(source, opts);
+  }
+
+  /** Run the pipeline on an already-downloaded source (skips the download step). */
+  async runSource(source: SourceVideo, opts: PipelineOptions = {}): Promise<PipelineResult> {
+    this.log.info({ source: source.id, path: source.localPath }, 'processing source');
 
     // Transcription and loudness are independent reads of the source; run together.
     const [transcript, loudness] = await Promise.all([

@@ -19,7 +19,6 @@ import {
   CLIP_MAX_SEC,
   CLIP_MIN_SEC,
   isValidClipLength,
-  windowMeanRms,
   type ClipCandidate,
   type LoudnessTimeline,
   type Transcript,
@@ -84,6 +83,21 @@ export function loudnessScore(meanRms: number, baseline: number, rangeDb = 12): 
   return clamp(50 + rel * 50, 0, 100);
 }
 
+/** Number of whitespace-separated words in a string. */
+export function wordCount(text: string): number {
+  const t = text.trim();
+  return t.length === 0 ? 0 : t.split(/\s+/).length;
+}
+
+/**
+ * Map speech density (words/second) to 0–100. Normal speech is ~2–3 wps, so
+ * `targetWps` maps to 100; silence/applause (few words) scores near 0. This keeps
+ * clips anchored to actual talking rather than raw noise (applause, music, cheers).
+ */
+export function speechDensityScore(wordsPerSec: number, targetWps = 3): number {
+  return clamp((wordsPerSec / targetWps) * 100, 0, 100);
+}
+
 /** Weighted combination of the two 0–100 signals, normalized by the weight sum. */
 export function combineScores(
   loud: number,
@@ -94,6 +108,41 @@ export function combineScores(
   const total = loudnessWeight + transcriptWeight;
   if (total <= 0) return 0;
   return (loud * loudnessWeight + text * transcriptWeight) / total;
+}
+
+/**
+ * Fast mean-RMS lookup over a loudness timeline: O(log n) per window via a prefix
+ * sum + binary search, instead of scanning every sample. Essential on long VODs
+ * (a 6-hour stream is ~240k samples). Averages samples whose start is in
+ * `[startSec, endSec)`; returns the baseline when the window covers no sample.
+ */
+export function createLoudnessLookup(
+  timeline: LoudnessTimeline,
+): (startSec: number, endSec: number) => number {
+  const { samples, baselineRms } = timeline;
+  const n = samples.length;
+  const starts = new Float64Array(n);
+  const prefix = new Float64Array(n + 1);
+  for (let i = 0; i < n; i++) {
+    starts[i] = samples[i]?.start ?? 0;
+    prefix[i + 1] = (prefix[i] ?? 0) + (samples[i]?.rms ?? 0);
+  }
+  const lowerBound = (t: number): number => {
+    let lo = 0;
+    let hi = n;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if ((starts[mid] ?? 0) < t) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+  return (startSec, endSec) => {
+    const lo = lowerBound(startSec);
+    const hi = lowerBound(endSec);
+    if (hi <= lo) return baselineRms;
+    return ((prefix[hi] ?? 0) - (prefix[lo] ?? 0)) / (hi - lo);
+  };
 }
 
 /** Greedily keep the highest-scoring non-overlapping candidates (input sorted desc). */
@@ -118,9 +167,10 @@ export function parseScore(raw: string): ScoredText {
 }
 
 const SCORER_SYSTEM =
-  'You rate how likely a short livestream transcript snippet is to go viral as a clip. ' +
-  'Reply ONLY with JSON: {"rating": <integer 0-10>, "reason": "<max 8 words>"}. ' +
-  'Higher = funnier, more shocking, more quotable.';
+  'You rate how good a short video clip this transcript snippet would make (0-10). ' +
+  'High = a self-contained moment that is funny, surprising, quotable, or a high-energy ' +
+  'reaction. Low = filler, mid-sentence, or nothing is really said. ' +
+  'Reply ONLY with JSON: {"rating": <integer 0-10>, "reason": "<max 8 words>"}.';
 
 /** Build a {@link TranscriptScorer} from a chat client + small model name. */
 export function createChatScorer(chat: ChatClient, model: string): TranscriptScorer {
@@ -144,6 +194,8 @@ export interface ClipDetectorOptions {
   transcriptWeight?: number;
   minScore?: number;
   maxCandidates?: number;
+  /** Minimum words/second a window must have to be considered (speech gate). */
+  minWordsPerSec?: number;
   /** dB above baseline that maps loudness to 100. */
   loudnessRangeDb?: number;
   /** Shortlist size (for LLM scoring) as a multiple of the candidate limit. */
@@ -156,6 +208,7 @@ export class ScoringClipDetector implements ClipDetector {
   private readonly transcriptWeight: number;
   private readonly minScore: number;
   private readonly maxCandidates: number;
+  private readonly minWordsPerSec: number;
   private readonly rangeDb: number;
   private readonly shortlistMultiplier: number;
   private readonly log = createLogger('research');
@@ -167,6 +220,7 @@ export class ScoringClipDetector implements ClipDetector {
     this.transcriptWeight = opts.transcriptWeight ?? cfg.transcriptWeight;
     this.minScore = opts.minScore ?? cfg.minScore;
     this.maxCandidates = opts.maxCandidates ?? cfg.maxCandidates;
+    this.minWordsPerSec = opts.minWordsPerSec ?? cfg.minWordsPerSec;
     this.rangeDb = opts.loudnessRangeDb ?? 12;
     this.shortlistMultiplier = opts.shortlistMultiplier ?? 4;
   }
@@ -180,16 +234,36 @@ export class ScoringClipDetector implements ClipDetector {
     const minScore = opts.minScore ?? this.minScore;
 
     const windows = buildWindows(transcript.segments);
-    // Rank by loudness first (free), then only LLM-score the loudest shortlist.
-    const byLoudness = windows
-      .map((w) => ({
+    const meanRms = createLoudnessLookup(loudness);
+    const scored = windows.map((w) => {
+      const dur = Math.max(w.endSec - w.startSec, 0.001);
+      const wps = wordCount(w.text) / dur;
+      return {
         w,
-        loud: loudnessScore(windowMeanRms(loudness, w), loudness.baselineRms, this.rangeDb),
+        wps,
+        loud: loudnessScore(meanRms(w.startSec, w.endSec), loudness.baselineRms, this.rangeDb),
+        speech: speechDensityScore(wps),
+      };
+    });
+
+    // Speech gate: drop windows without enough talking (kills applause/music/cheers
+    // that are loud but have no content). Then pre-rank on loudness AND speech so both
+    // punchy spoken moments and high-energy reactions surface — not just the loudest.
+    const withSpeech = scored.filter((s) => s.wps >= this.minWordsPerSec);
+    const preRanked = withSpeech
+      .map((s) => ({
+        ...s,
+        pre: combineScores(s.loud, s.speech, this.loudnessWeight, this.transcriptWeight),
       }))
-      .sort((a, b) => b.loud - a.loud);
-    const shortlist = byLoudness.slice(0, Math.max(limit * this.shortlistMultiplier, limit));
+      .sort((a, b) => b.pre - a.pre);
+    const shortlist = preRanked.slice(0, Math.max(limit * this.shortlistMultiplier, limit));
     this.log.info(
-      { windows: windows.length, shortlist: shortlist.length, limit },
+      {
+        windows: windows.length,
+        withSpeech: withSpeech.length,
+        shortlist: shortlist.length,
+        limit,
+      },
       'scoring shortlist',
     );
 

@@ -4,7 +4,7 @@
  * so tests exercise arg-building and output-parsing without spawning yt-dlp.
  */
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { getConfig } from '../config/index.js';
 import type { Downloader, DownloadOptions } from '../core/contracts.js';
 import { execaRunner, type CommandRunner } from '../core/exec.js';
@@ -12,6 +12,7 @@ import { createLogger } from '../core/logger.js';
 import { ensureDataDirs } from '../core/paths.js';
 import { ytDlpBinary } from '../core/platform.js';
 import type { SourcePlatform, SourceVideo } from '../core/types.js';
+import { isKickVodUrl, resolveKickVodUrl } from './kick.js';
 
 /** Field separator for our yt-dlp `--print` template. */
 const FIELD_SEP = '\t';
@@ -35,15 +36,42 @@ export function sourceIdFromUrl(url: string): string {
   return createHash('sha1').update(url).digest('hex').slice(0, 12);
 }
 
-/** Build the yt-dlp argv for downloading a single source and printing its metadata. */
-export function buildDownloadArgs(url: string, outDir: string, maxHeight: number): string[] {
+/**
+ * Build a {@link SourceVideo} for a video already on disk, skipping the download.
+ * Lets the pipeline run on a file fetched by any means (useful when a platform's
+ * downloader is blocked, e.g. Kick behind anti-bot protection).
+ */
+export function sourceFromLocalFile(path: string): SourceVideo {
+  return {
+    id: sourceIdFromUrl(path),
+    url: `file://${path}`,
+    platform: 'other',
+    title: basename(path),
+    durationSec: 0,
+    localPath: path,
+    downloadedAt: new Date().toISOString(),
+  };
+}
+
+/**
+ * Build the yt-dlp argv for downloading a single source and printing its metadata.
+ * The output is named by our stable `basename` (not yt-dlp's `%(id)s`), because for
+ * HLS/m3u8 URLs `%(id)s` becomes a mangled string with query chars that Windows
+ * rewrites (e.g. `master.m3u8？aws`), leaving the reported path out of sync with disk.
+ */
+export function buildDownloadArgs(
+  url: string,
+  outDir: string,
+  maxHeight: number,
+  basename: string,
+): string[] {
   return [
     '--no-playlist',
     '--no-warnings',
     '-f',
     `bestvideo[height<=${maxHeight}]+bestaudio/best[height<=${maxHeight}]/best`,
     '-o',
-    join(outDir, '%(id)s.%(ext)s'),
+    join(outDir, `${basename}.%(ext)s`),
     '--no-simulate',
     '--print',
     `after_move:%(id)s${FIELD_SEP}%(title)s${FIELD_SEP}%(duration)s${FIELD_SEP}%(filepath)s`,
@@ -84,6 +112,8 @@ export interface DownloaderOptions {
   defaultMaxHeight?: number;
   /** Fixed output directory; falls back to the data downloads dir. */
   outDir?: string;
+  /** Resolve a Kick VOD page URL to a downloadable signed playlist (injected for tests). */
+  resolveKick?: (url: string) => Promise<string>;
 }
 
 export class YtDlpDownloader implements Downloader {
@@ -91,6 +121,7 @@ export class YtDlpDownloader implements Downloader {
   private readonly binary: string;
   private readonly defaultMaxHeight: number;
   private readonly outDirOverride?: string;
+  private readonly resolveKick: (url: string) => Promise<string>;
   private readonly log = createLogger('ingest');
 
   constructor(opts: DownloaderOptions = {}) {
@@ -98,13 +129,16 @@ export class YtDlpDownloader implements Downloader {
     this.binary = opts.binary ?? ytDlpBinary();
     this.defaultMaxHeight = opts.defaultMaxHeight ?? getConfig().ingest.maxHeight;
     this.outDirOverride = opts.outDir;
+    this.resolveKick = opts.resolveKick ?? resolveKickVodUrl;
   }
 
   async download(url: string, opts: DownloadOptions = {}): Promise<SourceVideo> {
     const outDir = opts.outDir ?? this.outDirOverride ?? (await ensureDataDirs()).downloads;
     const maxHeight = opts.maxHeight ?? this.defaultMaxHeight;
-    const args = buildDownloadArgs(url, outDir, maxHeight);
-    this.log.info({ url, maxHeight }, 'downloading source');
+    // Kick VODs need a browser-captured signed playlist; other sources download directly.
+    const fetchUrl = isKickVodUrl(url) ? await this.resolveKick(url) : url;
+    const args = buildDownloadArgs(fetchUrl, outDir, maxHeight, sourceIdFromUrl(url));
+    this.log.info({ url, resolved: fetchUrl !== url, maxHeight }, 'downloading source');
     const { stdout } = await this.runner.run(this.binary, args);
     const meta = parseDownloadOutput(stdout);
     const source: SourceVideo = {

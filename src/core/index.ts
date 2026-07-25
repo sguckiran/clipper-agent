@@ -4,5 +4,6 @@ export * from './contracts.js';
 export * from './exec.js';
 export * from './logger.js';
 export * from './paths.js';
+export * from './retry.js';
 export * from './platform.js';
 export * from './queue.js';

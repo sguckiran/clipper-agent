@@ -94,4 +94,14 @@ describe('ClippingPipeline', () => {
     expect(result.clips).toEqual([]);
     expect(deps.renderer.render).not.toHaveBeenCalled();
   });
+
+  it('runSource skips download and processes the given source', async () => {
+    const deps = makeDeps([cand('c1', 0, 15)]);
+    const result = await new ClippingPipeline(deps).runSource(source, { limit: 2 });
+
+    expect(deps.downloader.download).not.toHaveBeenCalled();
+    expect(deps.transcriber.transcribe).toHaveBeenCalledWith(source);
+    expect(deps.loudness.analyze).toHaveBeenCalledWith(source);
+    expect(result.clips).toHaveLength(1);
+  });
 });

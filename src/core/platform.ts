@@ -40,3 +40,15 @@ export function ffmpegBinary(): string {
 export function ytDlpBinary(): string {
   return getConfig().bin.ytDlpPath ?? 'yt-dlp';
 }
+
+/**
+ * A default TrueType font for burning captions. drawtext is given this explicit
+ * fontfile so it never depends on fontconfig (which isn't configured on many
+ * Windows ffmpeg builds). Override per-deployment with CLIPPER_CAPTION_FONT.
+ */
+export function defaultCaptionFontFile(): string {
+  const p = platformInfo();
+  if (p.isWindows) return 'C:/Windows/Fonts/arial.ttf';
+  if (p.isMac) return '/System/Library/Fonts/Supplemental/Arial.ttf';
+  return '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
+}

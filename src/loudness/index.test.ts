@@ -14,6 +14,8 @@ describe('buildLoudnessArgs', () => {
   it('uses ebur128 with peak and a null sink', () => {
     const args = buildLoudnessArgs('/in.mp4');
     expect(args).toContain('ebur128=peak=true');
+    expect(args).toContain('-vn'); // audio-only, no video decode
+    expect(args.indexOf('-vn')).toBeLessThan(args.indexOf('-i')); // input-level = skip demux
     expect(args).toContain('-i');
     expect(args).toContain('/in.mp4');
     expect(args.slice(-2)).toEqual(['null', '-']);

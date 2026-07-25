@@ -18,6 +18,10 @@ clips/
 work/
 *.log
 
+# Browser automation / scraper artifacts
+.playwright-mcp/
+*_data.json
+
 # OS
 .DS_Store
 Thumbs.db

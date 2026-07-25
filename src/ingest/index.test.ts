@@ -4,6 +4,7 @@ import {
   buildDownloadArgs,
   inferPlatform,
   parseDownloadOutput,
+  sourceFromLocalFile,
   sourceIdFromUrl,
   YtDlpDownloader,
 } from './index.js';
@@ -31,12 +32,26 @@ describe('sourceIdFromUrl', () => {
   });
 });
 
+describe('sourceFromLocalFile', () => {
+  it('wraps a local path as a SourceVideo without downloading', () => {
+    const src = sourceFromLocalFile('/videos/my clip.mp4');
+    expect(src).toMatchObject({
+      platform: 'other',
+      title: 'my clip.mp4',
+      localPath: '/videos/my clip.mp4',
+      url: 'file:///videos/my clip.mp4',
+    });
+    expect(src.id).toHaveLength(12);
+  });
+});
+
 describe('buildDownloadArgs', () => {
-  it('encodes the height cap, output template and print template', () => {
-    const args = buildDownloadArgs('https://twitch.tv/x', '/out', 720);
+  it('names output by our stable basename and encodes the height cap', () => {
+    const args = buildDownloadArgs('https://twitch.tv/x', '/out', 720, 'abc123');
     expect(args).toContain('bestvideo[height<=720]+bestaudio/best[height<=720]/best');
     const oIdx = args.indexOf('-o');
-    expect(args[oIdx + 1]).toContain('%(id)s.%(ext)s');
+    expect(args[oIdx + 1]).toContain('abc123.%(ext)s');
+    expect(args[oIdx + 1]).not.toContain('%(id)s'); // avoid mangled HLS ids
     expect(args).toContain('--no-simulate');
     expect(args.some((a) => a.startsWith('after_move:'))).toBe(true);
     expect(args[args.length - 1]).toBe('https://twitch.tv/x');
@@ -95,5 +110,28 @@ describe('YtDlpDownloader', () => {
     });
     expect(source.id).toHaveLength(12);
     expect(source.downloadedAt).toMatch(/\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('resolves a Kick VOD URL to a signed playlist before downloading', async () => {
+    const runner: CommandRunner = {
+      run: vi.fn().mockResolvedValue({
+        stdout: 'vid\tKick Stream\t60\t/out/abc.mp4',
+        stderr: '',
+        exitCode: 0,
+      }),
+    };
+    const resolveKick = vi.fn().mockResolvedValue('https://cf.net/master.m3u8?aws.sessionId=tok');
+    const dl = new YtDlpDownloader({ runner, binary: 'yt-dlp', outDir: '/out', resolveKick });
+    const kickUrl = 'https://kick.com/krimoe/videos/019f68d4-abc';
+    const source = await dl.download(kickUrl);
+
+    expect(resolveKick).toHaveBeenCalledWith(kickUrl);
+    // yt-dlp is pointed at the resolved playlist, not the Kick page URL
+    const [, args] = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(args).toContain('https://cf.net/master.m3u8?aws.sessionId=tok');
+    expect(args).not.toContain(kickUrl);
+    // but the SourceVideo keeps the original Kick identity
+    expect(source.url).toBe(kickUrl);
+    expect(source.platform).toBe('kick');
   });
 });

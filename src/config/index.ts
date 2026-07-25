@@ -20,15 +20,24 @@ const schema = z.object({
   CLIPPER_WHISPER_MODEL: z.string().default('whisper-large-v3-turbo'),
   CLIPPER_RESEARCH_MODEL: z.string().default('llama-3.1-8b-instant'),
   CLIPPER_CAPTION_MODEL: z.string().default('llama-3.1-8b-instant'),
+  // Audio is chunked to this length before transcription to stay under the Whisper
+  // upload limit (~4.8 MB per chunk at 16 kHz mono 64 kbps for the default).
+  CLIPPER_TRANSCRIBE_CHUNK_SEC: z.coerce.number().int().positive().default(600),
 
   // Clip detection / scoring. Final score = loudnessWeight*loudness + transcriptWeight*text.
   CLIPPER_SCORE_LOUDNESS_WEIGHT: z.coerce.number().min(0).default(0.5),
   CLIPPER_SCORE_TRANSCRIPT_WEIGHT: z.coerce.number().min(0).default(0.5),
   CLIPPER_MIN_SCORE: z.coerce.number().min(0).max(100).default(55),
   CLIPPER_MAX_CANDIDATES: z.coerce.number().int().positive().default(10),
+  // Minimum words/second a window must contain to be a clip candidate. Filters out
+  // applause/music/cheering (loud but no speech). ~0.8 keeps talking, drops silence.
+  CLIPPER_MIN_WORDS_PER_SEC: z.coerce.number().min(0).default(0.8),
 
   // Ingest
   CLIPPER_CLIP_MAX_HEIGHT: z.coerce.number().int().positive().default(1080),
+
+  // Render — explicit caption font file (falls back to a per-OS default)
+  CLIPPER_CAPTION_FONT: z.string().optional(),
 
   // Channel monitor (auto-enqueue new VODs)
   CLIPPER_MONITOR_CHANNELS: z.string().default(''),
@@ -67,15 +76,21 @@ export interface Config {
     whisperModel: string;
     researchModel: string;
     captionModel: string;
+    transcribeChunkSec: number;
   };
   scoring: {
     loudnessWeight: number;
     transcriptWeight: number;
     minScore: number;
     maxCandidates: number;
+    minWordsPerSec: number;
   };
   ingest: {
     maxHeight: number;
+  };
+  render: {
+    /** Explicit caption font file; undefined → per-OS default. */
+    captionFont?: string;
   };
   monitor: {
     /** Channel/playlist URLs to poll for new VODs. */
@@ -111,15 +126,20 @@ export function getConfig(): Config {
       whisperModel: env.CLIPPER_WHISPER_MODEL,
       researchModel: env.CLIPPER_RESEARCH_MODEL,
       captionModel: env.CLIPPER_CAPTION_MODEL,
+      transcribeChunkSec: env.CLIPPER_TRANSCRIBE_CHUNK_SEC,
     },
     scoring: {
       loudnessWeight: env.CLIPPER_SCORE_LOUDNESS_WEIGHT,
       transcriptWeight: env.CLIPPER_SCORE_TRANSCRIPT_WEIGHT,
       minScore: env.CLIPPER_MIN_SCORE,
       maxCandidates: env.CLIPPER_MAX_CANDIDATES,
+      minWordsPerSec: env.CLIPPER_MIN_WORDS_PER_SEC,
     },
     ingest: {
       maxHeight: env.CLIPPER_CLIP_MAX_HEIGHT,
+    },
+    render: {
+      captionFont: env.CLIPPER_CAPTION_FONT,
     },
     monitor: {
       channels: env.CLIPPER_MONITOR_CHANNELS.split(',')

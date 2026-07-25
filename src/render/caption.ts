@@ -26,7 +26,9 @@ export function fallbackCaption(candidate: ClipCandidate): string {
 }
 
 const CAPTION_SYSTEM =
-  'You write one punchy, sensationalist caption for a short vertical video clip. ' +
+  'You write one short, catchy caption for a vertical video clip, based ONLY on the ' +
+  'transcript given. It must accurately reflect what is actually said — do NOT invent ' +
+  'names, events, or drama. Engaging but truthful. ' +
   'Reply ONLY with JSON: {"caption": "<max 12 words, no hashtags, no quotes>"}.';
 
 export interface CaptionWriterOptions {
