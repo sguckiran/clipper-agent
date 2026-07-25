@@ -6,6 +6,7 @@ import type {
   Caption,
   Clip,
   ClipCandidate,
+  LoudnessTimeline,
   PublishResult,
   PublishTarget,
   SourceVideo,
@@ -29,9 +30,24 @@ export interface Transcriber {
   transcribe(source: SourceVideo): Promise<Transcript>;
 }
 
-/** Scores a transcript and proposes clip-worthy windows (research module → Claude). */
+/** Measures the loudness profile of a source's audio (loudness module → ffmpeg). */
+export interface LoudnessAnalyzer {
+  analyze(source: SourceVideo): Promise<LoudnessTimeline>;
+}
+
+/**
+ * Scores a transcript against a loudness profile and proposes clip-worthy windows
+ * (research module). Loudness is the primary trigger; a tiny LLM confirms the text.
+ *
+ * Note: unlike the other contracts, `detect` also takes the {@link LoudnessTimeline}
+ * because clip-worthiness is driven by audio energy the transcript alone can't see.
+ */
 export interface ClipDetector {
-  detect(transcript: Transcript, opts?: DetectOptions): Promise<ClipCandidate[]>;
+  detect(
+    transcript: Transcript,
+    loudness: LoudnessTimeline,
+    opts?: DetectOptions,
+  ): Promise<ClipCandidate[]>;
 }
 
 export interface DetectOptions {

@@ -30,6 +30,8 @@ export interface JobQueue {
   claimNext(): Promise<Job | undefined>;
   complete(id: string): Promise<void>;
   fail(id: string, error: string): Promise<void>;
+  /** Return a job to the pending pool for a later retry (attempt count is preserved). */
+  reschedule(id: string): Promise<void>;
   list(status?: JobStatus): Promise<Job[]>;
 }
 
@@ -105,6 +107,12 @@ export class FileJobQueue implements JobQueue {
     await this.mutate(id, (job) => {
       job.status = 'failed';
       job.error = error;
+    });
+  }
+
+  async reschedule(id: string): Promise<void> {
+    await this.mutate(id, (job) => {
+      job.status = 'pending';
     });
   }
 

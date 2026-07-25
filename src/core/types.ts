@@ -53,6 +53,30 @@ export interface Transcript {
   fullText: string;
 }
 
+/** A loudness measurement over a short, fixed-width slice of a source's audio. */
+export interface LoudnessSample {
+  /** Slice start in seconds. */
+  start: number;
+  /** Slice end in seconds. */
+  end: number;
+  /** RMS loudness in dBFS (negative; louder is closer to 0). */
+  rms: number;
+  /** Peak loudness in dBFS for the slice. */
+  peak: number;
+}
+
+/**
+ * Loudness profile of a source video, produced by a LoudnessAnalyzer.
+ * Loud moments relative to {@link baselineRms} are the primary clip-worthiness signal.
+ */
+export interface LoudnessTimeline {
+  sourceId: string;
+  /** Fixed-width slices in chronological order. */
+  samples: LoudnessSample[];
+  /** Median RMS across the source (dBFS), used as the "normal" baseline. */
+  baselineRms: number;
+}
+
 /**
  * A candidate window the research agent thinks is clip-worthy.
  * Must satisfy the project clip-length rule (10–20s) by the time it is rendered.
@@ -132,4 +156,20 @@ export function windowDurationSec(window: { startSec: number; endSec: number }):
 export function isValidClipLength(window: { startSec: number; endSec: number }): boolean {
   const d = windowDurationSec(window);
   return d >= CLIP_MIN_SEC && d <= CLIP_MAX_SEC;
+}
+
+/**
+ * Mean RMS (dBFS) of the loudness samples overlapping a window. Returns the
+ * timeline baseline when no sample overlaps (e.g. a gap in the audio profile).
+ */
+export function windowMeanRms(
+  timeline: LoudnessTimeline,
+  window: { startSec: number; endSec: number },
+): number {
+  const overlapping = timeline.samples.filter(
+    (s) => s.end > window.startSec && s.start < window.endSec,
+  );
+  if (overlapping.length === 0) return timeline.baselineRms;
+  const sum = overlapping.reduce((acc, s) => acc + s.rms, 0);
+  return sum / overlapping.length;
 }

@@ -12,11 +12,27 @@ import { z } from 'zod';
 loadDotenv();
 
 const schema = z.object({
-  // LLM / transcription
+  // LLM / transcription. Research + caption run on a small, cheap Groq model so the
+  // per-window prompts stay affordable at scale; ANTHROPIC_API_KEY is retained for
+  // future modules but is not required by the current pipeline.
   GROQ_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  CLIPPER_RESEARCH_MODEL: z.string().default('claude-haiku-4-5'),
-  CLIPPER_CAPTION_MODEL: z.string().default('claude-sonnet-4-6'),
+  CLIPPER_WHISPER_MODEL: z.string().default('whisper-large-v3-turbo'),
+  CLIPPER_RESEARCH_MODEL: z.string().default('llama-3.1-8b-instant'),
+  CLIPPER_CAPTION_MODEL: z.string().default('llama-3.1-8b-instant'),
+
+  // Clip detection / scoring. Final score = loudnessWeight*loudness + transcriptWeight*text.
+  CLIPPER_SCORE_LOUDNESS_WEIGHT: z.coerce.number().min(0).default(0.5),
+  CLIPPER_SCORE_TRANSCRIPT_WEIGHT: z.coerce.number().min(0).default(0.5),
+  CLIPPER_MIN_SCORE: z.coerce.number().min(0).max(100).default(55),
+  CLIPPER_MAX_CANDIDATES: z.coerce.number().int().positive().default(10),
+
+  // Ingest
+  CLIPPER_CLIP_MAX_HEIGHT: z.coerce.number().int().positive().default(1080),
+
+  // Channel monitor (auto-enqueue new VODs)
+  CLIPPER_MONITOR_CHANNELS: z.string().default(''),
+  CLIPPER_MONITOR_INTERVAL_SEC: z.coerce.number().int().positive().default(900),
 
   // Publishing — TikTok
   TIKTOK_CLIENT_KEY: z.string().optional(),
@@ -48,8 +64,23 @@ export interface Config {
   llm: {
     groqApiKey?: string;
     anthropicApiKey?: string;
+    whisperModel: string;
     researchModel: string;
     captionModel: string;
+  };
+  scoring: {
+    loudnessWeight: number;
+    transcriptWeight: number;
+    minScore: number;
+    maxCandidates: number;
+  };
+  ingest: {
+    maxHeight: number;
+  };
+  monitor: {
+    /** Channel/playlist URLs to poll for new VODs. */
+    channels: string[];
+    intervalSec: number;
   };
   publish: {
     tiktok: { clientKey?: string; clientSecret?: string; accessToken?: string };
@@ -77,8 +108,24 @@ export function getConfig(): Config {
     llm: {
       groqApiKey: env.GROQ_API_KEY,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
+      whisperModel: env.CLIPPER_WHISPER_MODEL,
       researchModel: env.CLIPPER_RESEARCH_MODEL,
       captionModel: env.CLIPPER_CAPTION_MODEL,
+    },
+    scoring: {
+      loudnessWeight: env.CLIPPER_SCORE_LOUDNESS_WEIGHT,
+      transcriptWeight: env.CLIPPER_SCORE_TRANSCRIPT_WEIGHT,
+      minScore: env.CLIPPER_MIN_SCORE,
+      maxCandidates: env.CLIPPER_MAX_CANDIDATES,
+    },
+    ingest: {
+      maxHeight: env.CLIPPER_CLIP_MAX_HEIGHT,
+    },
+    monitor: {
+      channels: env.CLIPPER_MONITOR_CHANNELS.split(',')
+        .map((c) => c.trim())
+        .filter((c) => c.length > 0),
+      intervalSec: env.CLIPPER_MONITOR_INTERVAL_SEC,
     },
     publish: {
       tiktok: {
