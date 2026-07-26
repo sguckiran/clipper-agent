@@ -30,9 +30,11 @@ import {
 } from '../core/types.js';
 import { createPrescreen } from './prescreen.js';
 import { NEUTRAL_SCORE, type ScoredText, type TranscriptScorer } from './scorer.js';
+import type { AxisPolicy, SkillAxis } from './skill.js';
 
 export * from './prescreen.js';
 export * from './scorer.js';
+export * from './skill.js';
 
 export interface WindowCandidate {
   startSec: number;
@@ -138,6 +140,34 @@ export function combineScores(
   return (loud * loudnessWeight + text * transcriptWeight) / total;
 }
 
+/** Which axis floor a rating failed, or undefined when it clears all of them. */
+export function failedAxis(
+  rating: Pick<ScoredText, SkillAxis>,
+  policy: Record<SkillAxis, AxisPolicy>,
+): SkillAxis | undefined {
+  for (const axis of ['hook', 'funny', 'pocket'] as const) {
+    if (rating[axis] < policy[axis].floor) return axis;
+  }
+  return undefined;
+}
+
+/**
+ * Blend the skill's three axes into one 0–100 content score.
+ *
+ * Floors are enforced separately by {@link failedAxis} rather than folded in here: a
+ * weighted average lets one strong axis carry a clip that is broken on another, which is
+ * exactly what "it has to be funny AND hook AND be out of pocket" rules out.
+ */
+export function axisScore(
+  rating: Pick<ScoredText, SkillAxis>,
+  policy: Record<SkillAxis, AxisPolicy>,
+): number {
+  const axes = ['hook', 'funny', 'pocket'] as const;
+  const total = axes.reduce((acc, a) => acc + policy[a].weight, 0);
+  if (total <= 0) return 0;
+  return axes.reduce((acc, a) => acc + rating[a] * policy[a].weight, 0) / total;
+}
+
 /**
  * Fast mean-RMS lookup over a loudness timeline: O(log n) per window via a prefix
  * sum + binary search, instead of scanning every sample. Essential on long VODs
@@ -206,6 +236,44 @@ function normalize(text: string): string {
 }
 
 /**
+ * Locate a quote across a run of segments, returning the index of the segment it starts in
+ * and the one it ends in.
+ *
+ * Spanning matters: the rater quotes what a person said, and Whisper splits speech into
+ * ~2-5s segments, so a quote of any length routinely straddles a boundary — "Do you watch
+ * Angry Ginge? Yeah" arrives as two segments. Testing segments individually silently fails to
+ * match those, which is most of them.
+ */
+export function locateQuote(
+  segments: readonly TranscriptSegment[],
+  quote: string,
+): { startIdx: number; endIdx: number } | undefined {
+  const needle = normalize(quote);
+  if (needle.length < 12) return undefined;
+
+  // Concatenated normalized text, plus the segment each character came from.
+  let joined = '';
+  const owner: number[] = [];
+  for (const [i, seg] of segments.entries()) {
+    const t = normalize(seg.text);
+    if (!t) continue;
+    if (joined) {
+      joined += ' ';
+      owner.push(i);
+    }
+    joined += t;
+    for (let k = 0; k < t.length; k++) owner.push(i);
+  }
+
+  const at = joined.indexOf(needle);
+  if (at < 0) return undefined;
+  const startIdx = owner[at];
+  const endIdx = owner[Math.min(at + needle.length - 1, owner.length - 1)];
+  if (startIdx === undefined || endIdx === undefined) return undefined;
+  return { startIdx, endIdx };
+}
+
+/**
  * Trim trailing talk that follows the punchline, so a clip ends on the line that makes it
  * rather than on whatever was said next.
  *
@@ -220,29 +288,67 @@ export function trimTrailingAfterQuote(
   minSec: number,
   minSavingSec = 2,
 ): WindowCandidate {
-  const needle = normalize(quote);
-  if (needle.length < 12) return window;
-
   const inWindow = segments.filter(
-    (s) => s.start >= window.startSec && s.end <= window.endSec + 0.001,
+    (s) => s.start >= window.startSec - 0.001 && s.end <= window.endSec + 0.001,
   );
-  // Walk forward and stop at the first segment by which the quote has fully appeared.
-  let acc = '';
-  for (const [i, seg] of inWindow.entries()) {
-    acc = acc ? `${acc} ${normalize(seg.text)}` : normalize(seg.text);
-    if (!acc.includes(needle)) continue;
-    if (window.endSec - seg.end < minSavingSec) return window;
-    if (seg.end - window.startSec < minSec) return window;
-    return {
-      startSec: window.startSec,
-      endSec: seg.end,
-      text: inWindow
-        .slice(0, i + 1)
-        .map((s) => s.text)
-        .join(' '),
-    };
-  }
-  return window;
+  const found = locateQuote(inWindow, quote);
+  if (!found) return window;
+  const seg = inWindow[found.endIdx];
+  if (!seg) return window;
+  if (window.endSec - seg.end < minSavingSec) return window;
+  if (seg.end - window.startSec < minSec) return window;
+  return {
+    startSec: window.startSec,
+    endSec: seg.end,
+    text: inWindow
+      .slice(0, found.endIdx + 1)
+      .map((s) => s.text)
+      .join(' '),
+  };
+}
+
+/**
+ * Move the clip's start forward so it opens on the hook line instead of the setup.
+ *
+ * `leadInSec` is a deliberate pre-roll: cutting *exactly* on the hook drops the viewer into
+ * a conversation with no idea what is happening, and a hook that needs explaining isn't a
+ * hook. Keeping a beat of the preceding line gives just enough context for the hook to land.
+ * Set it to 0 for a hard cut.
+ *
+ * Conservative in the same way as {@link trimTrailingAfterQuote}: segment boundaries only,
+ * only when the quote is found, and never shortening the clip below `minSec`.
+ */
+export function trimLeadingBeforeQuote(
+  window: WindowCandidate,
+  hookQuote: string,
+  segments: readonly TranscriptSegment[],
+  minSec: number,
+  leadInSec = 0,
+): WindowCandidate {
+  const inWindow = segments.filter(
+    (s) => s.start >= window.startSec - 0.001 && s.end <= window.endSec + 0.001,
+  );
+  const found = locateQuote(inWindow, hookQuote);
+  if (!found || found.startIdx === 0) return window; // not found, or already opens on it
+  const seg = inWindow[found.startIdx];
+  if (!seg) return window;
+
+  // Cut at an exact offset rather than snapping to a segment boundary: preceding segments are
+  // often many seconds long, so snapping would either overshoot the lead-in or skip it.
+  const start = Math.max(window.startSec, seg.start - leadInSec);
+  if (start <= window.startSec) return window;
+  if (window.endSec - start < minSec) return window;
+  const kept = inWindow.filter((s) => s.end > start);
+  return { startSec: start, endSec: window.endSec, text: kept.map((s) => s.text).join(' ') };
+}
+
+/**
+ * `MMmSSs` timecode for logs. Rounds down to the second, because rounding up carries into a
+ * nonsense "48m60s".
+ */
+export function formatTimecode(sec: number): string {
+  const whole = Math.floor(Math.max(sec, 0));
+  return `${Math.floor(whole / 60)}m${String(whole % 60).padStart(2, '0')}s`;
 }
 
 /** Greedily keep the highest-scoring non-overlapping candidates (input sorted desc). */
@@ -272,6 +378,12 @@ export interface ClipDetectorOptions {
   fillerWords?: readonly string[];
   /** Drop candidates the rater flags as unpostable. */
   dropUnpostable?: boolean;
+  /** Per-axis weights and floors; falls back to the skill defaults. */
+  axisPolicy?: Record<SkillAxis, AxisPolicy>;
+  /** Seconds of the preceding line kept before the hook, so the hook has context. */
+  hookLeadInSec?: number;
+  /** Fail the run when more than this fraction of windows could not be rated (0-1). */
+  maxUnratedFraction?: number;
   /** Clip length bounds / target (seconds); fall back to config. */
   minSec?: number;
   maxSec?: number;
@@ -292,6 +404,9 @@ export class ScoringClipDetector implements ClipDetector {
   private readonly spiceWords: readonly string[];
   private readonly fillerWords: readonly string[];
   private readonly dropUnpostable: boolean;
+  private readonly axisPolicy: Record<SkillAxis, AxisPolicy>;
+  private readonly hookLeadInSec: number;
+  private readonly maxUnratedFraction: number;
   private readonly minSec: number;
   private readonly maxSec: number;
   private readonly targetSec: number;
@@ -311,6 +426,9 @@ export class ScoringClipDetector implements ClipDetector {
     this.spiceWords = opts.spiceWords ?? cfg.scoring.spiceWords;
     this.fillerWords = opts.fillerWords ?? cfg.scoring.fillerWords;
     this.dropUnpostable = opts.dropUnpostable ?? cfg.scoring.dropUnpostable;
+    this.axisPolicy = opts.axisPolicy ?? cfg.scoring.axisPolicy;
+    this.hookLeadInSec = opts.hookLeadInSec ?? cfg.scoring.hookLeadInSec;
+    this.maxUnratedFraction = opts.maxUnratedFraction ?? cfg.scoring.maxUnratedFraction;
     this.minSec = opts.minSec ?? cfg.clip.minSec;
     this.maxSec = opts.maxSec ?? cfg.clip.maxSec;
     this.targetSec = opts.targetSec ?? cfg.clip.targetSec;
@@ -365,23 +483,67 @@ export class ScoringClipDetector implements ClipDetector {
     );
 
     const ratings = await this.scorer.scoreBatch(selected.map((w) => w.text));
+
+    // A single failed batch degrades gracefully. A mostly-failed run does not: every window
+    // scores a neutral 50, which clears the floors on nothing but arithmetic, so the pipeline
+    // would happily spend render time on clips nobody rated. Fail the job instead — it can be
+    // retried once the rate limit resets, which is exactly what a queue worker is for.
+    // Sentinel on `reason`, not `kind`: a successfully rated row that simply omits `kind`
+    // defaults to 'unrated', which would count real ratings as failures.
+    const unrated = ratings.filter((r) => r.reason === NEUTRAL_SCORE.reason).length;
+    const unratedFraction = ratings.length > 0 ? unrated / ratings.length : 0;
+    if (unratedFraction > this.maxUnratedFraction) {
+      throw new Error(
+        `Clip rating failed for ${unrated}/${ratings.length} windows ` +
+          `(${Math.round(unratedFraction * 100)}% unrated, limit ` +
+          `${Math.round(this.maxUnratedFraction * 100)}%). Candidates would be meaningless; ` +
+          'check the rater logs above (rate limits or API errors) and retry.',
+      );
+    }
+    if (unrated > 0) {
+      this.log.warn({ unrated, of: ratings.length }, 'some windows could not be rated');
+    }
+
     const meanRms = createLoudnessLookup(loudness);
 
     const candidates: ClipCandidate[] = [];
-    let droppedUnpostable = 0;
+    const floorFails: Record<string, number> = { hook: 0, funny: 0, pocket: 0 };
+    let risky = 0;
     for (const [i, w] of selected.entries()) {
       const rating: ScoredText = ratings[i] ?? { ...NEUTRAL_SCORE };
-      if (rating.unpostable && this.dropUnpostable) {
-        droppedUnpostable++;
+
+      // Floors first: a clip must clear all three axes, so nothing rides in on one strong
+      // dimension while another is broken.
+      const failed = failedAxis(rating, this.axisPolicy);
+      if (failed) {
+        floorFails[failed] = (floorFails[failed] ?? 0) + 1;
         continue;
       }
-      const trimmed = trimTrailingAfterQuote(w, rating.quote, transcript.segments, this.minSec);
+      if (rating.risky) risky++;
+
+      // Open on the hook, end on the punchline. Both trims are conservative and independent:
+      // either can decline to move, and the window is unchanged if neither fires.
+      const opened = trimLeadingBeforeQuote(
+        w,
+        rating.hookQuote,
+        transcript.segments,
+        this.minSec,
+        this.hookLeadInSec,
+      );
+      const trimmed = trimTrailingAfterQuote(
+        opened,
+        rating.punchQuote,
+        transcript.segments,
+        this.minSec,
+      );
+
       const loud = loudnessScore(
         meanRms(trimmed.startSec, trimmed.endSec),
         loudness.baselineRms,
         this.rangeDb,
       );
-      const score = combineScores(loud, rating.score, this.loudnessWeight, this.transcriptWeight);
+      const content = axisScore(rating, this.axisPolicy);
+      const score = combineScores(loud, content, this.loudnessWeight, this.transcriptWeight);
       candidates.push({
         id: `${transcript.sourceId}-${trimmed.startSec.toFixed(1)}`,
         sourceId: transcript.sourceId,
@@ -391,17 +553,47 @@ export class ScoringClipDetector implements ClipDetector {
         reason: rating.reason || rating.kind,
         transcriptText: trimmed.text,
         kind: rating.kind,
-        quote: rating.quote,
-        unpostable: rating.unpostable,
+        quote: rating.punchQuote,
+        hookQuote: rating.hookQuote,
+        funny: rating.funny,
+        hook: rating.hook,
+        pocket: rating.pocket,
+        unpostable: rating.risky,
       });
     }
 
     const ranked = candidates.filter((c) => c.score >= minScore).sort((a, b) => b.score - a.score);
     const result = dedupeOverlapping(ranked).slice(0, limit);
     this.log.info(
-      { candidates: result.length, aboveThreshold: ranked.length, droppedUnpostable },
+      {
+        candidates: result.length,
+        aboveThreshold: ranked.length,
+        clearedFloors: candidates.length,
+        floorFails,
+        risky,
+      },
       'detection complete',
     );
+    // Per-candidate diagnostics: without the axis breakdown a run is uninterpretable — you
+    // can see which clips won but not which axis carried them or what to retune.
+    for (const c of result) {
+      this.log.info(
+        {
+          id: c.id,
+          at: formatTimecode(c.startSec),
+          dur: Number((c.endSec - c.startSec).toFixed(1)),
+          score: c.score,
+          funny: c.funny,
+          hook: c.hook,
+          pocket: c.pocket,
+          kind: c.kind,
+          risky: c.unpostable,
+          hookQuote: c.hookQuote,
+          punchQuote: c.quote,
+        },
+        'candidate',
+      );
+    }
     return result;
   }
 }

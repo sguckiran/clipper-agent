@@ -8,6 +8,8 @@
  */
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
+import { parseRect, type LayoutMode, type PanelRect } from '../render/layout.js';
+import type { AxisPolicy, SkillAxis } from '../research/skill.js';
 
 loadDotenv();
 
@@ -60,6 +62,27 @@ const schema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // Clip skill axes. A clip must be funny AND open on a hook AND be out of pocket, so each
+  // axis has both a weight (share of the content score) and a FLOOR — below the floor the
+  // clip is rejected outright, so nothing rides in on one strong axis while another is
+  // broken. Tune the criteria themselves in <dataDir>/prompts/clip-skill.v1.md.
+  CLIPPER_AXIS_HOOK_WEIGHT: z.coerce.number().min(0).default(0.4),
+  CLIPPER_AXIS_FUNNY_WEIGHT: z.coerce.number().min(0).default(0.35),
+  CLIPPER_AXIS_POCKET_WEIGHT: z.coerce.number().min(0).default(0.25),
+  CLIPPER_AXIS_HOOK_FLOOR: z.coerce.number().min(0).max(100).default(40),
+  CLIPPER_AXIS_FUNNY_FLOOR: z.coerce.number().min(0).max(100).default(35),
+  CLIPPER_AXIS_POCKET_FLOOR: z.coerce.number().min(0).max(100).default(30),
+  // Seconds of the preceding line kept in front of the hook. Defaults to 0 — a hard cut
+  // straight onto the hook. Reference clips that perform well cold-open mid-sentence and let
+  // the title card supply the premise, so lead-in mostly buys slower openings. Raise it if
+  // you want a beat of run-up.
+  CLIPPER_HOOK_LEAD_IN_SEC: z.coerce.number().min(0).default(0),
+  // Fail the run when more than this fraction of windows could not be rated. A single failed
+  // batch degrades gracefully; a mostly-failed run (rate limit, outage) would score every
+  // window a neutral 50 and render clips nobody actually rated, so fail the job instead and
+  // let the queue retry it.
+  CLIPPER_MAX_UNRATED_FRACTION: z.coerce.number().min(0).max(1).default(0.5),
+
   // Clip length. Windows are snapped to complete sentences, aiming for TARGET and
   // kept within [MIN, MAX] seconds.
   CLIPPER_CLIP_MIN_SEC: z.coerce.number().positive().default(15),
@@ -72,7 +95,17 @@ const schema = z.object({
   // Render — explicit caption font file (falls back to a per-OS default)
   CLIPPER_CAPTION_FONT: z.string().optional(),
   // Horizontal focus of the 9:16 center crop: 'center' | 'left' | 'right' | 0..1.
+  // Only used by CLIPPER_LAYOUT=fill.
   CLIPPER_CROP_X: z.string().default('center'),
+  // Reframing layout. 'fill' scales the whole frame and slices 9:16 out of it — right for
+  // normal footage. 'stack' crops named panels out of the source and stacks them
+  // vertically — for screen recordings (e.g. a browser showing two webcams side by side),
+  // where the centre of the frame is a window divider, not the subject.
+  CLIPPER_LAYOUT: z.enum(['fill', 'stack']).default('fill'),
+  // Panels to stack, semicolon-separated "x,y,w,h" rects in SOURCE pixels, top to bottom.
+  // Find them by extracting a frame and reading the coordinates off it:
+  //   ffmpeg -ss 600 -i vod.mp4 -frames:v 1 frame.png
+  CLIPPER_PANELS: z.string().default(''),
 
   // Channel monitor (auto-enqueue new VODs)
   CLIPPER_MONITOR_CHANNELS: z.string().default(''),
@@ -130,6 +163,12 @@ export interface Config {
     fillerWords: string[];
     /** Drop candidates the rater flags as unpostable. */
     dropUnpostable: boolean;
+    /** Per-axis weight + floor for the clip skill's three axes. */
+    axisPolicy: Record<SkillAxis, AxisPolicy>;
+    /** Seconds of lead-in kept before the hook line. */
+    hookLeadInSec: number;
+    /** Fail the run above this fraction of unrated windows (0-1). */
+    maxUnratedFraction: number;
   };
   clip: {
     minSec: number;
@@ -144,6 +183,10 @@ export interface Config {
     captionFont?: string;
     /** Horizontal focus of the crop: 'center' | 'left' | 'right' | numeric 0..1. */
     cropX: string;
+    /** Reframing layout: whole-frame slice, or stacked source panels. */
+    layout: LayoutMode;
+    /** Source panels to stack, top to bottom (only used when layout is 'stack'). */
+    panels: PanelRect[];
   };
   monitor: {
     /** Channel/playlist URLs to poll for new VODs. */
@@ -164,6 +207,31 @@ export interface Config {
     logLevel: RawConfig['LOG_LEVEL'];
     logFormat: RawConfig['LOG_FORMAT'];
   };
+}
+
+/**
+ * Parse semicolon-separated `x,y,w,h` panel rects. Throws on a malformed rect rather than
+ * skipping it — silently dropping a panel would render a subtly wrong layout for a whole
+ * batch of clips, which is much harder to notice than a startup error.
+ */
+function parsePanels(raw: string): PanelRect[] {
+  return splitSemis(raw).map((entry) => {
+    const rect = parseRect(entry);
+    if (!rect) {
+      throw new Error(
+        `Invalid CLIPPER_PANELS entry "${entry}" — expected "x,y,w,h" with positive w/h`,
+      );
+    }
+    return rect;
+  });
+}
+
+/** Split a semicolon-separated env value into trimmed, non-empty entries. */
+function splitSemis(raw: string): string[] {
+  return raw
+    .split(';')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
 }
 
 /** Split a comma-separated env value into trimmed, non-empty entries. */
@@ -201,6 +269,13 @@ export function getConfig(): Config {
       spiceWords: splitCsv(env.CLIPPER_SPICE_WORDS),
       fillerWords: splitCsv(env.CLIPPER_FILLER_WORDS),
       dropUnpostable: env.CLIPPER_DROP_UNPOSTABLE,
+      axisPolicy: {
+        hook: { weight: env.CLIPPER_AXIS_HOOK_WEIGHT, floor: env.CLIPPER_AXIS_HOOK_FLOOR },
+        funny: { weight: env.CLIPPER_AXIS_FUNNY_WEIGHT, floor: env.CLIPPER_AXIS_FUNNY_FLOOR },
+        pocket: { weight: env.CLIPPER_AXIS_POCKET_WEIGHT, floor: env.CLIPPER_AXIS_POCKET_FLOOR },
+      },
+      hookLeadInSec: env.CLIPPER_HOOK_LEAD_IN_SEC,
+      maxUnratedFraction: env.CLIPPER_MAX_UNRATED_FRACTION,
     },
     clip: {
       minSec: env.CLIPPER_CLIP_MIN_SEC,
@@ -213,6 +288,8 @@ export function getConfig(): Config {
     render: {
       captionFont: env.CLIPPER_CAPTION_FONT,
       cropX: env.CLIPPER_CROP_X,
+      layout: env.CLIPPER_LAYOUT,
+      panels: parsePanels(env.CLIPPER_PANELS),
     },
     monitor: {
       channels: splitCsv(env.CLIPPER_MONITOR_CHANNELS),

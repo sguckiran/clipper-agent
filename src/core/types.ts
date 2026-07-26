@@ -94,9 +94,15 @@ export interface ClipCandidate {
   transcriptText: string;
   /** Moment type from the rater, e.g. 'story' | 'take' | 'rant' | 'reaction'. */
   kind?: string;
-  /** The verbatim line the rater thinks makes the clip; the caption's best hook. */
+  /** The verbatim line the clip pays off on; the caption's best hook. */
   quote?: string;
-  /** Rater's guess that posting this as-is would get an account banned. */
+  /** The verbatim line the clip should open on, per the rater. */
+  hookQuote?: string;
+  /** Skill axis scores, 0–100 each: is it funny, does it hook, is it out of pocket. */
+  funny?: number;
+  hook?: number;
+  pocket?: number;
+  /** Rater's guess that posting this as-is would get an account actioned. */
   unpostable?: boolean;
 }
 

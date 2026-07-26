@@ -9,7 +9,8 @@ import { createGroqChatClient } from '../llm/groq.js';
 import { createLoudnessAnalyzer } from '../loudness/index.js';
 import { createCaptionWriter } from '../render/caption.js';
 import { createRenderer } from '../render/index.js';
-import { createChatScorer, createClipDetector } from '../research/index.js';
+import { createPromptStore } from '../prompts/index.js';
+import { createChatScorer, createClipDetector, promptStoreSkillLoader } from '../research/index.js';
 import { GroqTranscriber } from '../transcribe/index.js';
 import { createGroqTranscriptionClient } from '../transcribe/groq-client.js';
 import { ClippingPipeline } from './index.js';
@@ -26,6 +27,9 @@ export function createDefaultPipeline(): ClippingPipeline {
         chat,
         model: cfg.llm.researchModel,
         batchSize: cfg.scoring.llmScoreBatch,
+        // The rater consults the skill on every batch, read from the prompt store so the
+        // criteria can be retuned on disk without a rebuild.
+        skill: promptStoreSkillLoader(createPromptStore()),
       }),
     }),
     captionWriter: createCaptionWriter({ chat }),

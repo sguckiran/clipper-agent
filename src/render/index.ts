@@ -13,12 +13,18 @@ import { createLogger } from '../core/logger.js';
 import { ensureDataDirs } from '../core/paths.js';
 import { defaultCaptionFontFile, ffmpegBinary, preferredH264Encoder } from '../core/platform.js';
 import type { Caption, Clip, ClipCandidate, SourceVideo } from '../core/types.js';
+import {
+  fillChain,
+  formatRect,
+  stackGraph,
+  stackMetrics,
+  type FilterSpec,
+  type LayoutMode,
+  type PanelRect,
+} from './layout.js';
 
 export { createCaptionWriter, LlmCaptionWriter } from './caption.js';
-
-/** Output frame size for vertical short-form video. */
-const OUT_W = 1080;
-const OUT_H = 1920;
+export * from './layout.js';
 
 /**
  * Escape a file path for a drawtext `fontfile=`/`textfile=` value: forward slashes,
@@ -41,60 +47,87 @@ function captionY(position: NonNullable<Caption['style']>['position']): string {
   }
 }
 
-/** ffmpeg crop x-offset expression for a horizontal focus (0=left … 1=right). */
-export function cropXExpr(cropX: string): string {
-  const named: Record<string, number> = { left: 0, center: 0.5, right: 1 };
-  const frac = cropX in named ? named[cropX]! : Number.parseFloat(cropX);
-  const f = Number.isFinite(frac) ? Math.min(1, Math.max(0, frac)) : 0.5;
-  // in_w is the scaled input width; keep a 1080-wide slice at the requested focus.
-  return `(in_w-${OUT_W})*${f}`;
-}
-
 /**
- * Build the ffmpeg `-vf` filtergraph: reframe to 9:16, then burn the caption.
+ * Build the drawtext filter for a caption, or undefined when there is nothing to draw.
  *
- * Both the font and the caption text are passed to drawtext as files (`fontfile=` +
- * `textfile=`) so rendering never depends on fontconfig, and arbitrary caption text
- * (commas, apostrophes, colons, `%`) can't break the filtergraph parser.
- * `expansion=none` keeps the caption fully literal.
+ * Both the font and the caption text are passed as files (`fontfile=` + `textfile=`) so
+ * rendering never depends on fontconfig, and arbitrary caption text (commas, apostrophes,
+ * colons, `%`) can't break the filtergraph parser. `expansion=none` keeps it fully literal.
  */
-export function buildVideoFilter(
+export function drawtextFilter(
   caption: Caption,
   fontFile: string,
   textFile: string,
-  cropX = 'center',
-): string {
-  const parts = [
-    `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase`,
-    `crop=${OUT_W}:${OUT_H}:${cropXExpr(cropX)}:0`,
-  ];
-  if (caption.text.trim().length > 0) {
-    const style = caption.style ?? {};
-    const fontsize = style.fontSizePx ?? 48;
-    const color = style.color ?? 'white';
-    const y = captionY(style.position);
-    parts.push(
-      `drawtext=fontfile='${escapeFilterPath(fontFile)}'` +
-        `:textfile='${escapeFilterPath(textFile)}'` +
-        `:expansion=none` +
-        `:fontcolor=${color}:fontsize=${fontsize}` +
-        `:box=1:boxcolor=black@0.5:boxborderw=12` +
-        `:x=(w-text_w)/2:y=${y}`,
-    );
-  }
-  return parts.join(',');
+  yExpr?: string,
+): string | undefined {
+  if (caption.text.trim().length === 0) return undefined;
+  const style = caption.style ?? {};
+  const fontsize = style.fontSizePx ?? 48;
+  const color = style.color ?? 'white';
+  const y = yExpr ?? captionY(style.position);
+  return (
+    `drawtext=fontfile='${escapeFilterPath(fontFile)}'` +
+    `:textfile='${escapeFilterPath(textFile)}'` +
+    `:expansion=none` +
+    `:fontcolor=${color}:fontsize=${fontsize}` +
+    `:box=1:boxcolor=black@0.5:boxborderw=12` +
+    `:x=(w-text_w)/2:y=${y}`
+  );
 }
 
-/** Build the full ffmpeg argv to render one clip. */
+/**
+ * Centre the caption inside the strip left below the stacked panels. Falls back to the
+ * normal bottom placement when the panels fill the whole frame and there is no strip.
+ */
+export function stackCaptionY(stackedH: number, stripH: number): string {
+  if (stripH < 40) return 'h-text_h*3';
+  return `${stackedH}+(${stripH}-text_h)/2`;
+}
+
+/**
+ * Build the filtergraph for a clip: reframe per the chosen layout, then burn the caption.
+ */
+export function buildFilterSpec(
+  caption: Caption,
+  fontFile: string,
+  textFile: string,
+  layout: LayoutMode,
+  cropX: string,
+  panels: readonly PanelRect[],
+): FilterSpec {
+  if (layout === 'stack') {
+    const { stackedH, stripH } = stackMetrics(panels);
+    return stackGraph(
+      panels,
+      drawtextFilter(caption, fontFile, textFile, stackCaptionY(stackedH, stripH)),
+    );
+  }
+  const parts = fillChain(cropX);
+  const draw = drawtextFilter(caption, fontFile, textFile);
+  if (draw) parts.push(draw);
+  return { kind: 'vf', filter: parts.join(',') };
+}
+
+/**
+ * Build the full ffmpeg argv to render one clip.
+ *
+ * A `complex` graph consumes the video stream several times, so ffmpeg no longer picks
+ * streams for us — the video comes from the graph's output label and the audio has to be
+ * mapped explicitly. `0:a?` is optional so a source with no audio track still renders.
+ */
 export function buildRenderArgs(
   input: string,
   startSec: number,
   endSec: number,
-  filter: string,
+  spec: FilterSpec,
   encoder: string,
   output: string,
 ): string[] {
   const duration = Math.max(0, endSec - startSec);
+  const filterArgs =
+    spec.kind === 'vf'
+      ? ['-vf', spec.filter]
+      : ['-filter_complex', spec.graph, '-map', `[${spec.videoLabel}]`, '-map', '0:a?'];
   return [
     '-y',
     '-ss',
@@ -103,8 +136,7 @@ export function buildRenderArgs(
     input,
     '-t',
     duration.toString(),
-    '-vf',
-    filter,
+    ...filterArgs,
     '-c:v',
     encoder,
     '-c:a',
@@ -123,6 +155,10 @@ export interface RendererOptions {
   fontFile?: string;
   /** Horizontal crop focus ('center'|'left'|'right'|0..1); falls back to config. */
   cropX?: string;
+  /** Reframing layout; falls back to config. */
+  layout?: LayoutMode;
+  /** Source panels to stack, when layout is 'stack'; falls back to config. */
+  panels?: readonly PanelRect[];
   /** Fixed output directory; falls back to the data clips dir. */
   outDir?: string;
 }
@@ -133,16 +169,37 @@ export class FfmpegRenderer implements Renderer {
   private readonly encoder: string;
   private readonly fontFile: string;
   private readonly cropX: string;
+  private readonly layout: LayoutMode;
+  private readonly panels: readonly PanelRect[];
   private readonly outDirOverride?: string;
   private readonly log = createLogger('render');
 
   constructor(opts: RendererOptions = {}) {
+    const cfg = getConfig().render;
     this.runner = opts.runner ?? execaRunner;
     this.ffmpeg = opts.ffmpeg ?? ffmpegBinary();
     this.encoder = opts.encoder ?? preferredH264Encoder();
-    this.fontFile = opts.fontFile ?? getConfig().render.captionFont ?? defaultCaptionFontFile();
-    this.cropX = opts.cropX ?? getConfig().render.cropX;
+    this.fontFile = opts.fontFile ?? cfg.captionFont ?? defaultCaptionFontFile();
+    this.cropX = opts.cropX ?? cfg.cropX;
+    this.layout = opts.layout ?? cfg.layout;
+    this.panels = opts.panels ?? cfg.panels;
     this.outDirOverride = opts.outDir;
+    // Fail at construction, not mid-render: the factory builds the renderer before any
+    // download starts, so a misconfigured layout surfaces in seconds rather than after
+    // an hour of transcription.
+    if (this.layout === 'stack' && this.panels.length < 2) {
+      throw new Error(
+        'CLIPPER_LAYOUT=stack needs at least two panels — set CLIPPER_PANELS to ' +
+          'semicolon-separated "x,y,w,h" rects (e.g. "34,74,600,448;634,74,600,448")',
+      );
+    }
+    if (this.layout === 'stack') {
+      const { stackedH, stripH } = stackMetrics(this.panels);
+      this.log.info(
+        { panels: this.panels.map(formatRect), stackedH, captionStripH: stripH },
+        'stack layout active',
+      );
+    }
   }
 
   async render(source: SourceVideo, candidate: ClipCandidate, caption: Caption): Promise<Clip> {
@@ -154,16 +211,26 @@ export class FfmpegRenderer implements Renderer {
     if (caption.text.trim().length > 0) {
       await writeFile(captionFile, caption.text.trim(), 'utf8');
     }
-    const filter = buildVideoFilter(caption, this.fontFile, captionFile, this.cropX);
+    const spec = buildFilterSpec(
+      caption,
+      this.fontFile,
+      captionFile,
+      this.layout,
+      this.cropX,
+      this.panels,
+    );
     const args = buildRenderArgs(
       source.localPath,
       candidate.startSec,
       candidate.endSec,
-      filter,
+      spec,
       this.encoder,
       output,
     );
-    this.log.info({ id: candidate.id, encoder: this.encoder }, 'rendering clip');
+    this.log.info(
+      { id: candidate.id, encoder: this.encoder, layout: this.layout },
+      'rendering clip',
+    );
     await this.runner.run(this.ffmpeg, args);
     return {
       id: `clip-${candidate.id}`,

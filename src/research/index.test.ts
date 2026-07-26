@@ -1,14 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { LoudnessTimeline, Transcript, TranscriptSegment } from '../core/types.js';
 import {
+  axisScore,
   buildWindows,
   combineScores,
   createLoudnessLookup,
+  DEFAULT_AXIS_POLICY,
   dedupeOverlapping,
+  failedAxis,
+  formatTimecode,
+  locateQuote,
   loudnessScore,
   NEUTRAL_SCORE,
   ScoringClipDetector,
   thinByStride,
+  trimLeadingBeforeQuote,
   trimTrailingAfterQuote,
   wordCount,
   type ClipDetectorOptions,
@@ -154,6 +160,129 @@ describe('trimTrailingAfterQuote', () => {
   });
 });
 
+describe('formatTimecode', () => {
+  it('formats minutes and seconds', () => {
+    expect(formatTimecode(0)).toBe('0m00s');
+    expect(formatTimecode(65)).toBe('1m05s');
+    expect(formatTimecode(3338.1)).toBe('55m38s');
+  });
+
+  it('floors rather than rounds, so seconds never carry to 60', () => {
+    // 2939.7s rounded gives the nonsense "48m60s"
+    expect(formatTimecode(2939.7)).toBe('48m59s');
+  });
+
+  it('clamps negatives', () => {
+    expect(formatTimecode(-5)).toBe('0m00s');
+  });
+});
+
+describe('failedAxis / axisScore', () => {
+  const rating = (funny: number, hook: number, pocket: number) => ({ funny, hook, pocket });
+
+  it('clears all floors for a strong clip', () => {
+    expect(failedAxis(rating(80, 75, 70), DEFAULT_AXIS_POLICY)).toBeUndefined();
+  });
+
+  it('names the axis that failed', () => {
+    // hilarious and unhinged, but opens on setup
+    expect(failedAxis(rating(95, 20, 90), DEFAULT_AXIS_POLICY)).toBe('hook');
+    // shocking with a great opening, but not actually funny
+    expect(failedAxis(rating(30, 90, 85), DEFAULT_AXIS_POLICY)).toBe('funny');
+    // funny and well-opened, but completely tame
+    expect(failedAxis(rating(80, 80, 10), DEFAULT_AXIS_POLICY)).toBe('pocket');
+  });
+
+  it('treats the floor as inclusive', () => {
+    const p = DEFAULT_AXIS_POLICY;
+    expect(failedAxis(rating(p.funny.floor, p.hook.floor, p.pocket.floor), p)).toBeUndefined();
+  });
+
+  it('weights the axes and normalizes by the weight sum', () => {
+    // hook .40, funny .35, pocket .25 — all equal means the blend equals the value
+    expect(axisScore(rating(60, 60, 60), DEFAULT_AXIS_POLICY)).toBeCloseTo(60);
+    expect(axisScore(rating(80, 75, 70), DEFAULT_AXIS_POLICY)).toBeCloseTo(
+      (80 * 0.35 + 75 * 0.4 + 70 * 0.25) / 1,
+    );
+  });
+
+  it('weights hook highest by default', () => {
+    const hookStrong = axisScore(rating(0, 100, 0), DEFAULT_AXIS_POLICY);
+    const funnyStrong = axisScore(rating(100, 0, 0), DEFAULT_AXIS_POLICY);
+    const pocketStrong = axisScore(rating(0, 0, 100), DEFAULT_AXIS_POLICY);
+    expect(hookStrong).toBeGreaterThan(funnyStrong);
+    expect(funnyStrong).toBeGreaterThan(pocketStrong);
+  });
+
+  it('is zero when all weights are zero', () => {
+    const zero = {
+      hook: { weight: 0, floor: 0 },
+      funny: { weight: 0, floor: 0 },
+      pocket: { weight: 0, floor: 0 },
+    };
+    expect(axisScore(rating(90, 90, 90), zero)).toBe(0);
+  });
+});
+
+describe('trimLeadingBeforeQuote', () => {
+  const segments = segs([
+    [0, 6, 'So anyway, what were we saying about the weekend.'],
+    [6, 12, 'WAIT you did WHAT to the car?'],
+    [12, 20, 'That is the worst thing I have ever heard.'],
+  ]);
+  const window = { startSec: 0, endSec: 20, text: 'all three' };
+
+  it('moves the start forward so the clip opens on the hook', () => {
+    // leadIn 0 -> snap straight to the hook segment
+    const out = trimLeadingBeforeQuote(window, 'wait you did what to the car', segments, 5, 0);
+    expect(out.startSec).toBe(6);
+    expect(out.text).toBe(
+      'WAIT you did WHAT to the car? That is the worst thing I have ever heard.',
+    );
+  });
+
+  it('keeps exactly the requested lead-in beat so the hook has context', () => {
+    // hook starts at 6s; 1.5s of lead-in opens at 4.5s, mid-way through the setup line
+    const out = trimLeadingBeforeQuote(window, 'wait you did what to the car', segments, 5, 1.5);
+    expect(out.startSec).toBe(4.5);
+    // the partially-heard setup segment is still part of the clip's text
+    expect(out.text).toContain('what were we saying');
+  });
+
+  it('clamps the lead-in to the window start', () => {
+    const late = { startSec: 5.5, endSec: 20, text: 'x' };
+    const out = trimLeadingBeforeQuote(late, 'wait you did what to the car', segments, 5, 1.5);
+    expect(out.startSec).toBe(5.5);
+  });
+
+  it('leaves the window alone when it already opens on the hook', () => {
+    expect(trimLeadingBeforeQuote(window, 'so anyway what were we saying', segments, 5, 0)).toBe(
+      window,
+    );
+  });
+
+  it('leaves the window alone when the hook is not found', () => {
+    expect(trimLeadingBeforeQuote(window, 'something else entirely', segments, 5, 0)).toBe(window);
+  });
+
+  it('leaves the window alone for a too-short quote', () => {
+    expect(trimLeadingBeforeQuote(window, 'wait', segments, 5, 0)).toBe(window);
+  });
+
+  it('never trims below minSec', () => {
+    // opening at 6 would leave 14s; demand 16 and it must decline
+    expect(trimLeadingBeforeQuote(window, 'wait you did what to the car', segments, 16, 0)).toBe(
+      window,
+    );
+  });
+
+  it('composes with the trailing trim to open on hook and end on punchline', () => {
+    const opened = trimLeadingBeforeQuote(window, 'wait you did what to the car', segments, 5, 0);
+    const closed = trimTrailingAfterQuote(opened, 'wait you did what to the car', segments, 5);
+    expect([closed.startSec, closed.endSec]).toEqual([6, 12]);
+  });
+});
+
 describe('dedupeOverlapping', () => {
   it('keeps the first of each overlapping run', () => {
     const c = (id: string, s: number, e: number, score: number) => ({
@@ -199,13 +328,31 @@ describe('ScoringClipDetector', () => {
   const ADMIN = 0;
   const STORY = 40;
 
-  /** A scorer that rates by content: the story is gold, the stream admin is filler. */
+  /**
+   * A scorer that rates by content: the story clears every axis, the stream admin fails
+   * them all. Axis values are explicit so floor behaviour is visible in each test.
+   */
   const contentScorer = (extra: Partial<ScoredText> = {}): TranscriptScorer => ({
     scoreBatch: vi.fn(async (snippets: readonly string[]) =>
       snippets.map((s) =>
         s.includes('alligator')
-          ? { ...NEUTRAL_SCORE, score: 95, kind: 'story', reason: 'alligator story', ...extra }
-          : { ...NEUTRAL_SCORE, score: 10, kind: 'filler', reason: 'stream admin' },
+          ? {
+              ...NEUTRAL_SCORE,
+              funny: 95,
+              hook: 95,
+              pocket: 95,
+              kind: 'story',
+              reason: 'alligator story',
+              ...extra,
+            }
+          : {
+              ...NEUTRAL_SCORE,
+              funny: 10,
+              hook: 10,
+              pocket: 10,
+              kind: 'filler',
+              reason: 'stream admin',
+            },
       ),
     ),
   });
@@ -216,7 +363,8 @@ describe('ScoringClipDetector', () => {
 
   it('picks the quiet funny moment over the loud empty one', async () => {
     // The regression this module exists for: under the old loudness-gated ranking the
-    // alligator story was never even shown to the rater.
+    // alligator story was never even shown to the rater. The admin window now also fails
+    // the axis floors outright, so it does not merely rank lower — it is rejected.
     const det = mk({
       scorer: contentScorer(),
       loudnessWeight: 0.2,
@@ -226,22 +374,84 @@ describe('ScoringClipDetector', () => {
       minWordsPerSec: 0,
     });
     const res = await det.detect(transcript, loudness);
-    expect(res.map((c) => c.startSec)).toEqual([STORY, ADMIN]);
+    expect(res.map((c) => c.startSec)).toEqual([STORY]);
     expect(res[0]?.kind).toBe('story');
   });
 
-  it('still prefers the loud moment when loudness is weighted alone', async () => {
-    // Proves the flip is driven by the weights, not by an accident of the fixture.
-    const det = mk({
-      scorer: contentScorer(),
+  it('ranks by loudness when loudness is weighted alone, among clips that clear floors', async () => {
+    // Proves the content/loudness blend is driven by the weights. Both windows are given
+    // passing axis scores here so the floors are not what decides the order.
+    const allPass: TranscriptScorer = {
+      scoreBatch: vi.fn(async (snippets: readonly string[]) =>
+        snippets.map(() => ({
+          ...NEUTRAL_SCORE,
+          funny: 60,
+          hook: 60,
+          pocket: 60,
+          kind: 'take',
+          reason: 'rated',
+        })),
+      ),
+    };
+    const res = await mk({
+      scorer: allPass,
       loudnessWeight: 1,
       transcriptWeight: 0,
       minScore: 0,
       maxCandidates: 10,
       minWordsPerSec: 0,
-    });
-    const res = await det.detect(transcript, loudness);
-    expect(res[0]?.startSec).toBe(ADMIN);
+    }).detect(transcript, loudness);
+    expect(res[0]?.startSec).toBe(ADMIN); // the loud one
+  });
+
+  it('rejects a clip that fails any single axis floor', async () => {
+    // Hilarious and unhinged, but it opens on setup — exactly the case floors exist for.
+    const noHook: TranscriptScorer = {
+      scoreBatch: vi.fn(async (snippets: readonly string[]) =>
+        snippets.map(() => ({
+          ...NEUTRAL_SCORE,
+          funny: 95,
+          hook: 10,
+          pocket: 90,
+          kind: 'story',
+          reason: 'rated',
+        })),
+      ),
+    };
+    expect(
+      await mk({ scorer: noHook, minScore: 0, maxCandidates: 10, minWordsPerSec: 0 }).detect(
+        transcript,
+        loudness,
+      ),
+    ).toEqual([]);
+  });
+
+  it('honours a custom axis policy', async () => {
+    const noHook: TranscriptScorer = {
+      scoreBatch: vi.fn(async (snippets: readonly string[]) =>
+        snippets.map(() => ({
+          ...NEUTRAL_SCORE,
+          funny: 95,
+          hook: 10,
+          pocket: 90,
+          kind: 'story',
+          reason: 'rated',
+        })),
+      ),
+    };
+    // Drop the hook floor to 0 and the same clip is allowed through.
+    const res = await mk({
+      scorer: noHook,
+      minScore: 0,
+      maxCandidates: 10,
+      minWordsPerSec: 0,
+      axisPolicy: {
+        hook: { weight: 0.4, floor: 0 },
+        funny: { weight: 0.35, floor: 35 },
+        pocket: { weight: 0.25, floor: 30 },
+      },
+    }).detect(transcript, loudness);
+    expect(res.length).toBeGreaterThan(0);
   });
 
   it('rates every surviving window, not a loudness shortlist', async () => {
@@ -251,17 +461,26 @@ describe('ScoringClipDetector', () => {
     expect((scorer.scoreBatch as ReturnType<typeof vi.fn>).mock.calls[0][0]).toHaveLength(2);
   });
 
-  it('carries the rater’s kind, quote and reason onto the candidate', async () => {
+  it('carries the axis scores, quotes, kind and reason onto the candidate', async () => {
     const det = mk({
-      scorer: contentScorer({ quote: 'wrestled an alligator behind a waffle house' }),
+      scorer: contentScorer({
+        punchQuote: 'and then he got arrested for it',
+        hookQuote: 'wrestled an alligator behind a waffle house',
+      }),
       minScore: 0,
       maxCandidates: 1,
       minWordsPerSec: 0,
     });
     const [top] = await det.detect(transcript, loudness);
-    expect(top?.reason).toBe('alligator story');
-    expect(top?.quote).toBe('wrestled an alligator behind a waffle house');
-    expect(top?.kind).toBe('story');
+    expect(top).toMatchObject({
+      reason: 'alligator story',
+      kind: 'story',
+      funny: 95,
+      hook: 95,
+      pocket: 95,
+      quote: 'and then he got arrested for it',
+      hookQuote: 'wrestled an alligator behind a waffle house',
+    });
   });
 
   it('filters out candidates below minScore', async () => {
@@ -269,11 +488,11 @@ describe('ScoringClipDetector', () => {
       scorer: contentScorer(),
       loudnessWeight: 0.2,
       transcriptWeight: 0.8,
-      minScore: 90,
+      minScore: 95,
       maxCandidates: 10,
       minWordsPerSec: 0,
     });
-    // story ≈ 0.2*50 + 0.8*95 = 86 < 90
+    // story = 0.2*50 + 0.8*95 = 86 < 95
     expect(await det.detect(transcript, loudness)).toEqual([]);
   });
 
@@ -293,26 +512,15 @@ describe('ScoringClipDetector', () => {
     expect(rated[0]).toContain('alligator');
   });
 
-  it('keeps unpostable candidates by default and drops them on request', async () => {
-    const flagged = (): TranscriptScorer => ({
-      scoreBatch: vi.fn(async (snippets: readonly string[]) =>
-        snippets.map((s) => ({
-          ...NEUTRAL_SCORE,
-          score: s.includes('alligator') ? 95 : 10,
-          unpostable: s.includes('alligator'),
-        })),
-      ),
+  it('reports risky clips without dropping them', async () => {
+    const det = mk({
+      scorer: contentScorer({ risky: true }),
+      minScore: 0,
+      maxCandidates: 10,
+      minWordsPerSec: 0,
     });
-    const base = { minScore: 0, maxCandidates: 10, minWordsPerSec: 0 };
-    const kept = await mk({ scorer: flagged(), ...base }).detect(transcript, loudness);
-    expect(kept.some((c) => c.startSec === STORY)).toBe(true);
-    expect(kept.find((c) => c.startSec === STORY)?.unpostable).toBe(true);
-
-    const dropped = await mk({ scorer: flagged(), ...base, dropUnpostable: true }).detect(
-      transcript,
-      loudness,
-    );
-    expect(dropped.some((c) => c.startSec === STORY)).toBe(false);
+    const res = await det.detect(transcript, loudness);
+    expect(res.find((c) => c.startSec === STORY)?.unpostable).toBe(true);
   });
 
   it('drops windows without enough speech (applause/music)', async () => {
@@ -333,11 +541,90 @@ describe('ScoringClipDetector', () => {
     expect(scorer.scoreBatch).toHaveBeenCalledWith([]); // gated out before rating
   });
 
-  it('falls back to neutral scores when the rater returns nothing', async () => {
-    const empty: TranscriptScorer = { scoreBatch: vi.fn().mockResolvedValue([]) };
-    const det = mk({ scorer: empty, minScore: 0, maxCandidates: 10, minWordsPerSec: 0 });
-    const res = await det.detect(transcript, loudness);
+  it('fails the run when most windows could not be rated', async () => {
+    // Groq's free tier exhausted its daily token budget mid-run and every batch fell back to
+    // a neutral 50 — which clears the floors on arithmetic alone, so the pipeline happily
+    // rendered clips nobody had rated. Fail the job instead so the queue can retry it.
+    const dead: TranscriptScorer = {
+      scoreBatch: vi.fn(async (snippets: readonly string[]) =>
+        snippets.map(() => ({ ...NEUTRAL_SCORE })),
+      ),
+    };
+    await expect(
+      mk({ scorer: dead, minScore: 0, maxCandidates: 10, minWordsPerSec: 0 }).detect(
+        transcript,
+        loudness,
+      ),
+    ).rejects.toThrow(/2\/2 windows.*100% unrated/s);
+  });
+
+  it('tolerates a minority of unrated windows', async () => {
+    const partial: TranscriptScorer = {
+      scoreBatch: vi.fn(async (snippets: readonly string[]) =>
+        snippets.map((s) =>
+          s.includes('alligator')
+            ? {
+                ...NEUTRAL_SCORE,
+                funny: 90,
+                hook: 90,
+                pocket: 90,
+                kind: 'story',
+                reason: 'rated',
+              }
+            : { ...NEUTRAL_SCORE },
+        ),
+      ),
+    };
+    const res = await mk({
+      scorer: partial,
+      minScore: 0,
+      maxCandidates: 10,
+      minWordsPerSec: 0,
+      maxUnratedFraction: 0.5,
+    }).detect(transcript, loudness);
     expect(res.length).toBeGreaterThan(0);
-    expect(res[0]?.reason).toMatch(/unavailable/);
+  });
+});
+
+describe('locateQuote', () => {
+  const segments = segs([
+    [0, 4, 'Do you watch Angry Ginge?'],
+    [4, 6, 'Yeah.'],
+    [6, 12, "So why the fuck don't you watch me, bro?"],
+  ]);
+
+  it('finds a quote that spans a segment boundary', () => {
+    // Whisper splits speech into short segments, so rater quotes routinely straddle one.
+    expect(locateQuote(segments, 'Do you watch Angry Ginge? Yeah')).toEqual({
+      startIdx: 0,
+      endIdx: 1,
+    });
+  });
+
+  it('finds a quote inside a single segment', () => {
+    expect(locateQuote(segments, "so why the fuck don't you watch me")).toEqual({
+      startIdx: 2,
+      endIdx: 2,
+    });
+  });
+
+  it('matches across punctuation and casing', () => {
+    expect(locateQuote(segments, 'DO YOU WATCH -- angry ginge!!')).toMatchObject({ startIdx: 0 });
+  });
+
+  it('returns undefined for a missing or too-short quote', () => {
+    expect(locateQuote(segments, 'something else entirely')).toBeUndefined();
+    expect(locateQuote(segments, 'yeah')).toBeUndefined();
+  });
+
+  it('skips empty segments without breaking the index mapping', () => {
+    const withGap = segs([
+      [0, 2, ''],
+      [2, 6, 'my uncle wrestled an alligator'],
+    ]);
+    expect(locateQuote(withGap, 'uncle wrestled an alligator')).toEqual({
+      startIdx: 1,
+      endIdx: 1,
+    });
   });
 });

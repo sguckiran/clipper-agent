@@ -40,22 +40,53 @@ with no payoff is not a clip and the funniest thing in a stream is often said fl
    by word variety so chanting and screaming can't buy their way in. It counts questions but
    deliberately **not** exclamation marks: `!` measures delivery, and rewarding it just
    smuggles the loudness bias back in through the transcript.
-5. **LLM rating** — a Groq model rates each surviving window 0–100 against an anchored rubric,
-   batched `CLIPPER_LLM_SCORE_BATCH` snippets per request so rating hundreds of windows costs
-   tens of calls. It returns a score, a moment type, and the **verbatim punchline**, which is
-   used both to trim trailing dead air off the clip and as the caption's hook.
+5. **The clip skill** — a Groq model rates each surviving window against
+   [the skill](#the-clip-skill), batched `CLIPPER_LLM_SCORE_BATCH` snippets per request so
+   rating hundreds of windows costs tens of calls. It scores three axes and returns the
+   verbatim **hook line** and **punchline**, which re-cut the clip to open on the grab and
+   end on the payoff.
 6. Content + loudness are combined (default **80/20**), thresholded on `CLIPPER_MIN_SCORE`,
    de-overlapped, and the top N become clips.
 
-The rubric tells the rater to judge entertainment value only and _not_ to dock points for
-profanity, crude, dark or tasteless content — these are unfiltered streams and that material
-is most of what clips well. Asked a bare "is this a good clip?", a model hedges on exactly
-that content and returns a flat mid score for everything, which silently hands ranking back
-to loudness. Tune per streamer with `CLIPPER_SPICE_WORDS` (inside jokes, recurring bits, names
-worth catching) and `CLIPPER_FILLER_WORDS` (whatever their stream admin sounds like).
+## The clip skill
 
-Everything here — weights, threshold, clip length, speech gate, rating budget, candidate cap —
-is configurable (see [Configuration](#configuration)).
+What counts as a good clip is **not** hardcoded. It lives in an editable markdown skill that
+the rater consults on every batch:
+
+```
+<dataDir>/prompts/clip-skill.v1.md     # clipper prompts  → lists it
+```
+
+Edit that file and the next run uses it — no rebuild, no redeploy. It is seeded on first run
+and **never overwritten**, so your tuning survives upgrades. Drop in a `clip-skill.v2.md` and
+the store picks the highest version automatically.
+
+A clip has to be three things at once, scored 0–100 each:
+
+| Axis     | Question                                      | Weight | Floor |
+| -------- | --------------------------------------------- | ------ | ----- |
+| `hook`   | Do the first seconds stop a scroll?           | `0.40` | `40`  |
+| `funny`  | Is it actually funny (not just loud or rude)? | `0.35` | `35`  |
+| `pocket` | How out of pocket is it?                      | `0.25` | `30`  |
+
+The **floors** matter more than the weights. A weighted average lets one strong axis carry a
+clip that's broken on another — a hilarious bit that opens on setup, or a shocking one that
+isn't funny. Below its floor, an axis rejects the clip outright. Detection logs which axis
+did the rejecting (`floorFails: {hook: 31, funny: 12, pocket: 4}`), which tells you what to
+retune.
+
+The skill also tells the rater to judge entertainment value only and _not_ to dock points for
+profane, crude, dark or tasteless content. That clause is load-bearing: asked a bare "is this
+a good clip?", a model hedges on exactly the material these streams run on and returns a flat
+middling score for everything — and a flat text signal hands ranking straight back to
+loudness. Its last section is **Streamer notes**, for per-channel taste (recurring bits, the
+stream's format, what that audience clips).
+
+Tune the free prescreen alongside it with `CLIPPER_SPICE_WORDS` (inside jokes, recurring bits,
+names worth catching) and `CLIPPER_FILLER_WORDS` (whatever their stream admin sounds like).
+
+Everything here — axis weights and floors, threshold, clip length, speech gate, rating budget,
+candidate cap — is configurable (see [Configuration](#configuration)).
 
 ## Requirements
 
@@ -158,6 +189,11 @@ see `.env.example` for the full list. Key options:
 | `CLIPPER_SCORE_STRIDE_SEC`                             | `15`                      | Min gap between rated windows (drops near-duplicates)                       |
 | `CLIPPER_SPICE_WORDS` / `CLIPPER_FILLER_WORDS`         | — / —                     | Per-streamer prescreen terms to favour / penalise                           |
 | `CLIPPER_DROP_UNPOSTABLE`                              | `false`                   | Drop clips the rater flags as account-ban risk (slurs, threats)             |
+| `CLIPPER_AXIS_{HOOK,FUNNY,POCKET}_WEIGHT`              | `0.4` / `0.35` / `0.25`   | Share of the content score per skill axis                                   |
+| `CLIPPER_AXIS_{HOOK,FUNNY,POCKET}_FLOOR`               | `40` / `35` / `30`        | Below this an axis rejects the clip outright                                |
+| `CLIPPER_HOOK_LEAD_IN_SEC`                             | `1.5`                     | Lead-in kept before the hook line so it has context (`0` = hard cut)        |
+| `CLIPPER_LAYOUT`                                       | `fill`                    | `fill` (slice 9:16) or `stack` (crop + stack source panels)                 |
+| `CLIPPER_PANELS`                                       | —                         | `stack` panels: `x,y,w,h` rects, semicolon-separated                        |
 | `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
 | `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                 | Channels to poll + interval                                                 |
 | `CLIPPER_DATA_DIR`                                     | OS default                | Where downloads / clips / queue live                                        |

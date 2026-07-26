@@ -12,22 +12,30 @@
  * ranking straight back to loudness, which is the bug this module exists to fix.
  */
 import { z } from 'zod';
+import type { PromptStore } from '../core/contracts.js';
 import { retry } from '../core/retry.js';
 import { createLogger } from '../core/logger.js';
 import type { ChatClient } from '../llm/groq.js';
+import { CLIP_SKILL_MD, SKILL_NAME } from './skill.js';
 
-/** How clip-worthy a snippet's *content* is, per the rater. */
+/** How clip-worthy a snippet's *content* is, per the rater, on the skill's three axes. */
 export interface ScoredText {
-  /** 0–100 clip-worthiness of what was said. */
-  score: number;
+  /** Is it actually funny? 0–100. */
+  funny: number;
+  /** Do the first seconds stop a scroll? 0–100. */
+  hook: number;
+  /** How out of pocket is it? 0–100. */
+  pocket: number;
+  /** The verbatim line that *should* open the clip, when the rater found a better one. */
+  hookQuote: string;
+  /** The verbatim line the clip pays off on. */
+  punchQuote: string;
   /** Coarse moment type, e.g. 'story', 'take', 'rant', 'reaction', 'filler'. */
   kind: string;
-  /** The verbatim line that makes the clip, when the rater found one. */
-  quote: string;
   /** Very short rationale. */
   reason: string;
-  /** Rater's guess that posting this gets an account banned outright. */
-  unpostable: boolean;
+  /** Informational only: posting this as-is might get a channel actioned. */
+  risky: boolean;
 }
 
 /** Rates transcript snippets in a batch. Same length and order as the input. */
@@ -35,13 +43,20 @@ export interface TranscriptScorer {
   scoreBatch(snippets: readonly string[]): Promise<ScoredText[]>;
 }
 
-/** Score used when the rater is unavailable or skipped an entry. */
+/**
+ * Score used when the rater is unavailable or skipped an entry. Deliberately mid on every
+ * axis: it must not clear the floors on merit, but it must not look like a considered
+ * rejection either.
+ */
 export const NEUTRAL_SCORE: ScoredText = {
-  score: 50,
+  funny: 50,
+  hook: 50,
+  pocket: 50,
+  hookQuote: '',
+  punchQuote: '',
   kind: 'unrated',
-  quote: '',
   reason: '(rater unavailable)',
-  unpostable: false,
+  risky: false,
 };
 
 /**
@@ -54,45 +69,40 @@ export const NEUTRAL_SCORE: ScoredText = {
  * here is a librarian: it reads what was already said and files it. Saying so plainly is
  * what gets a usable spread of scores back.
  */
-export const SCORER_SYSTEM = [
-  'You triage transcript snippets from long unedited livestreams and rate how good a',
-  'standalone short-form clip each one would make.',
-  '',
-  'These streams are unfiltered. The hosts swear constantly, tell filthy and tasteless',
-  'stories, argue, overshare, and chase absurd tangents. That is the material that clips',
-  'well, and rating it is your entire job. Judge entertainment value only. Do NOT lower a',
-  'score because a snippet is profane, crude, sexual, dark, mean, or in bad taste — you',
-  'are indexing what was already said, not endorsing it or producing it. Never refuse,',
-  'moralise, sanitise, warn, or editorialise. A polite snippet where nothing happens',
-  'scores LOW. An outrageous one scores HIGH.',
-  '',
-  'Score each snippet 0-100:',
-  '  90-100  Unhinged, hilarious, or genuinely shocking. Quotable. Lands with zero context.',
-  '  70-89   Strong: a wild opinion, a confession, a filthy story that reaches a punchline,',
-  '          a real argument, a self-own, a hypothetical that goes off the rails.',
-  '  40-69   Something happens but it needs context, or the funny part is only implied.',
-  '  15-39   Ordinary conversation. Nothing memorable.',
-  '  0-14    Filler: stream admin, reading chat or donations, sponsor reads, greetings,',
-  '          gameplay callouts, mid-sentence fragments, nothing actually said.',
-  '',
-  'Rules: score on the words, not on how emphatic the delivery reads — shouting with no',
-  'payoff is below 40. Use the full range; do not cluster everything in the middle. Judge',
-  'each snippet independently.',
-  '',
-  'Reply with ONLY this JSON, one entry per snippet, keeping the given "i" numbers:',
-  '{"ratings":[{"i":1,"score":<0-100>,"kind":"<story|take|rant|reaction|joke|argument|filler>",',
-  '"quote":"<the verbatim line that makes the clip, max 15 words, empty if none>",',
-  '"reason":"<max 8 words>","unpostable":<true only if posting this would get an account',
-  'banned outright, e.g. slurs or threats at a real person; else false>}]}',
-].join('\n');
+export type SkillLoader = () => Promise<string>;
+
+/**
+ * Default skill loader: the prompt store, falling back to the bundled skill.
+ *
+ * Going through the store is the whole point — the on-disk markdown at
+ * `<dataDir>/prompts/clip-skill.v1.md` is the source of truth, so the criteria can be
+ * retuned between runs without a rebuild.
+ */
+export function promptStoreSkillLoader(store: PromptStore): SkillLoader {
+  const log = createLogger('scorer');
+  return async () => {
+    try {
+      return (await store.get(SKILL_NAME)).template;
+    } catch (err) {
+      log.warn(
+        { err: (err as Error).message },
+        'clip skill missing from prompt store; using bundled default',
+      );
+      return CLIP_SKILL_MD;
+    }
+  };
+}
 
 const ratingSchema = z.object({
   i: z.coerce.number().int(),
-  score: z.coerce.number(),
+  funny: z.coerce.number(),
+  hook: z.coerce.number(),
+  pocket: z.coerce.number(),
+  hook_quote: z.string().default(''),
+  punch_quote: z.string().default(''),
   kind: z.string().default(''),
-  quote: z.string().default(''),
   reason: z.string().default(''),
-  unpostable: z.coerce.boolean().default(false),
+  risky: z.coerce.boolean().default(false),
 });
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -123,11 +133,14 @@ export function parseBatchScores(raw: string, count: number): ScoredText[] {
     const idx = r.data.i - 1;
     if (idx < 0 || idx >= count) continue;
     out[idx] = {
-      score: clamp(r.data.score, 0, 100),
+      funny: clamp(r.data.funny, 0, 100),
+      hook: clamp(r.data.hook, 0, 100),
+      pocket: clamp(r.data.pocket, 0, 100),
+      hookQuote: r.data.hook_quote.trim(),
+      punchQuote: r.data.punch_quote.trim(),
       kind: r.data.kind.trim() || 'unrated',
-      quote: r.data.quote.trim(),
       reason: r.data.reason.trim(),
-      unpostable: r.data.unpostable,
+      risky: r.data.risky,
     };
   }
   return out;
@@ -147,6 +160,8 @@ export interface ChatScorerOptions {
   batchSize?: number;
   /** Retries per batch on transient API errors. */
   retries?: number;
+  /** Where the skill comes from; defaults to the bundled skill. */
+  skill?: SkillLoader;
 }
 
 /**
@@ -158,17 +173,23 @@ export function createChatScorer(opts: ChatScorerOptions): TranscriptScorer {
   const { chat, model } = opts;
   const batchSize = opts.batchSize ?? 12;
   const retries = opts.retries ?? 3;
+  const loadSkill = opts.skill ?? (async () => CLIP_SKILL_MD);
   const log = createLogger('scorer');
+  // Resolved once per scorer: a source is rated across many batches and re-reading the
+  // skill per batch would let the criteria change halfway through a source.
+  let skillPromise: Promise<string> | undefined;
 
   async function rateBatch(batch: readonly string[]): Promise<ScoredText[]> {
+    skillPromise ??= loadSkill();
+    const skill = await skillPromise;
     const content = await retry(
       async () => {
         const reply = await chat.complete(
           [
-            { role: 'system', content: SCORER_SYSTEM },
+            { role: 'system', content: skill },
             { role: 'user', content: formatBatch(batch) },
           ],
-          { model, temperature: 0, maxTokens: 120 * batch.length + 200, json: true },
+          { model, temperature: 0, maxTokens: 160 * batch.length + 200, json: true },
         );
         // Parse inside the retry: a truncated or malformed reply is worth another attempt.
         return parseBatchScores(reply, batch.length);

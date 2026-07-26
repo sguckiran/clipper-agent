@@ -19,32 +19,51 @@ export function parseCaption(raw: string): string {
 }
 
 /**
- * Deterministic caption used when the LLM is unavailable. Prefers the rater's punchline
- * quote — it is the line the clip exists for, so it beats the first eight words, which
- * are usually the setup.
+ * Deterministic caption used when the LLM is unavailable.
+ *
+ * Falls back to the *opening* words rather than the punchline quote: the caption is a title
+ * that sets the clip up, so echoing the payoff is worse than a plain premise. See
+ * {@link CAPTION_SYSTEM}.
  */
 export function fallbackCaption(candidate: ClipCandidate): string {
-  const quote = candidate.quote?.trim();
-  if (quote) return quote.split(/\s+/).slice(0, 12).join(' ');
   const words = candidate.transcriptText.trim().split(/\s+/).filter(Boolean).slice(0, 8);
   if (words.length > 0) return words.join(' ');
   return candidate.reason || 'You have to see this';
 }
 
-/** Prompt input: the transcript, plus the punchline to build the caption around. */
+/**
+ * Prompt input: the transcript, plus the punchline marked explicitly as the thing NOT to
+ * give away. Knowing the payoff helps write a title that promises it; printing it spoils it.
+ */
 export function captionInput(candidate: ClipCandidate): string {
-  const quote = candidate.quote?.trim();
   const transcript = candidate.transcriptText.slice(0, 600);
-  return quote ? `Punchline: ${quote}\n\nTranscript: ${transcript}` : transcript;
+  const quote = candidate.quote?.trim();
+  return quote
+    ? `Transcript: ${transcript}\n\nThe clip pays off on this line — do NOT give it away: ${quote}`
+    : `Transcript: ${transcript}`;
 }
 
-const CAPTION_SYSTEM =
-  'You write one short, catchy caption for a vertical video clip, based ONLY on the ' +
-  'transcript given. It must accurately reflect what is actually said — do NOT invent ' +
-  'names, events, or drama. Engaging but truthful. When a punchline line is provided, ' +
-  "build the caption around that moment. Match the clip's own register: these are " +
-  'unfiltered streams, so blunt and crude is fine and sanitising it makes a worse ' +
-  'caption. Reply ONLY with JSON: {"caption": "<max 12 words, no hashtags, no quotes>"}.';
+/**
+ * The title card is the clip's hook.
+ *
+ * This is a *premise*, not a punchline. A successful reference clip is titled "Krimoe plan to
+ * go international ✈️" — it says what the clip is about and nothing more, which is what lets
+ * the video cold-open mid-sentence without confusing anyone. Quoting the payoff instead
+ * produces fragments like "Same mother's life after this": accurate to the transcript,
+ * useless as a title, and it spoils the thing the viewer was staying for.
+ */
+export const CAPTION_SYSTEM =
+  'You write the on-screen title card for a short vertical clip from a livestream. It is the ' +
+  "clip's hook: a viewer reads it before they have heard a word, and it is the only context " +
+  'they get, because the video cold-opens mid-conversation.\n\n' +
+  'Write a PREMISE, not a punchline. Say what the clip is ABOUT — the scheme, the argument, ' +
+  'the claim, the situation — and stop. Never quote the funny line, never state the outcome, ' +
+  'never explain the joke. The title makes someone want the payoff; it does not deliver it.\n\n' +
+  'Style: a headline, 4-8 words, present tense, no full stop, at most one emoji. Casual ' +
+  'register is right. Example of the target: "Krimoe plan to go international"\n\n' +
+  'Base it ONLY on the transcript. Do NOT invent names, events or drama. These are ' +
+  'unfiltered streams, so blunt and crude is fine and sanitising it makes a worse title. ' +
+  'Reply ONLY with JSON: {"caption": "<the title>"}.';
 
 export interface CaptionWriterOptions {
   chat: ChatClient;

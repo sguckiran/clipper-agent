@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ClipCandidate } from '../core/types.js';
 import type { ChatClient } from '../llm/groq.js';
-import { captionInput, fallbackCaption, LlmCaptionWriter, parseCaption } from './caption.js';
+import {
+  CAPTION_SYSTEM,
+  captionInput,
+  fallbackCaption,
+  LlmCaptionWriter,
+  parseCaption,
+} from './caption.js';
 
 const candidate: ClipCandidate = {
   id: 'src-1.0',
@@ -23,18 +29,10 @@ describe('parseCaption', () => {
 });
 
 describe('fallbackCaption', () => {
-  it('prefers the rater’s punchline quote over the setup words', () => {
+  it('uses the opening words, never the punchline', () => {
+    // The caption is a title that sets the clip up, so echoing the payoff is worse than a
+    // plain premise — even though the punchline is the better *line*.
     expect(fallbackCaption({ ...candidate, quote: 'he ate the whole thing raw' })).toBe(
-      'he ate the whole thing raw',
-    );
-  });
-  it('uses the first few transcript words when there is no quote', () => {
-    expect(fallbackCaption(candidate)).toBe(
-      'and then absolutely everything went completely wrong on',
-    );
-  });
-  it('ignores a blank quote', () => {
-    expect(fallbackCaption({ ...candidate, quote: '  ' })).toBe(
       'and then absolutely everything went completely wrong on',
     );
   });
@@ -44,13 +42,23 @@ describe('fallbackCaption', () => {
 });
 
 describe('captionInput', () => {
-  it('leads with the punchline when one is present', () => {
-    expect(captionInput({ ...candidate, quote: 'raw, shell and all' })).toBe(
-      `Punchline: raw, shell and all\n\nTranscript: ${candidate.transcriptText}`,
-    );
+  it('marks the punchline as the thing not to give away', () => {
+    const out = captionInput({ ...candidate, quote: 'raw, shell and all' });
+    expect(out).toContain(`Transcript: ${candidate.transcriptText}`);
+    expect(out).toMatch(/do NOT give it away: raw, shell and all/);
   });
-  it('sends the transcript alone otherwise', () => {
-    expect(captionInput(candidate)).toBe(candidate.transcriptText);
+  it('sends the transcript alone when there is no punchline', () => {
+    expect(captionInput(candidate)).toBe(`Transcript: ${candidate.transcriptText}`);
+  });
+});
+
+describe('CAPTION_SYSTEM', () => {
+  it('asks for a premise and forbids spoiling the payoff', () => {
+    // A reference clip that performed well is titled "Krimoe plan to go international" — a
+    // premise. Quoting the payoff instead produced useless fragments.
+    expect(CAPTION_SYSTEM).toMatch(/Write a PREMISE, not a punchline/);
+    expect(CAPTION_SYSTEM).toMatch(/never state the outcome/);
+    expect(CAPTION_SYSTEM).toMatch(/Krimoe plan to go international/);
   });
 });
 

@@ -1,8 +1,13 @@
 /**
  * Prompt store: the "global agent prompt management system". Implements
- * {@link PromptStore}, backing named, versioned prompt templates as JSON files on
- * disk so prompts can be edited/rolled back without code changes. Bundled defaults
- * for the research + caption agents are seeded on first use.
+ * {@link PromptStore}, backing named, versioned prompt templates on disk so prompts can be
+ * edited/rolled back without code changes. Bundled defaults are seeded on first use.
+ *
+ * Two file formats, both `<name>.<version>.<ext>`:
+ *   - `.json` — short prompts with metadata (description, declared variables).
+ *   - `.md`   — long-form *skills*. The whole file is the template and the name/version come
+ *               from the filename. A rating rubric is the thing most worth iterating on, and
+ *               editing prose is far nicer in markdown than inside a JSON string literal.
  */
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -10,7 +15,7 @@ import { z } from 'zod';
 import type { PromptStore, PromptTemplate } from '../core/contracts.js';
 import { createLogger } from '../core/logger.js';
 import { dataPaths } from '../core/paths.js';
-import { SCORER_SYSTEM } from '../research/scorer.js';
+import { CLIP_SKILL_MD, SKILL_NAME, SKILL_VERSION } from '../research/skill.js';
 
 const promptFileSchema = z.object({
   name: z.string(),
@@ -41,13 +46,13 @@ export function interpolate(template: string, vars: Record<string, string | numb
 /** Bundled default prompts, seeded into an empty store. */
 export const DEFAULT_PROMPTS: PromptTemplate[] = [
   {
-    name: 'clip-research',
-    version: 'v2',
-    description: 'Content rating of a batch of transcript snippets for clip-worthiness.',
-    // Mirrors SCORER_SYSTEM in src/research/scorer.ts so the rubric can be tuned from
-    // disk. Keep the two in step when editing either.
-    template: `${SCORER_SYSTEM}\n\nSnippets:\n{{snippets}}`,
-    variables: ['snippets'],
+    name: 'clip-caption-style',
+    version: 'v1',
+    description: 'Notes appended to the caption prompt; edit to change caption voice.',
+    template:
+      "Match the clip's own register: these are unfiltered streams, so blunt and crude is " +
+      'fine and sanitising it makes a worse caption. Never invent names, events or drama.',
+    variables: [],
   },
   {
     name: 'clip-caption',
@@ -71,12 +76,27 @@ function toTemplate(raw: z.infer<typeof promptFileSchema>): PromptTemplate {
   return template;
 }
 
-function fileName(name: string, version: string): string {
-  return `${name}.${version}.json`;
+function fileName(name: string, version: string, ext: 'json' | 'md' = 'json'): string {
+  return `${name}.${version}.${ext}`;
+}
+
+/**
+ * Long-form skills seeded as markdown. The whole file body is the template; name and
+ * version come from the filename, so there is no frontmatter to keep in sync.
+ */
+export const DEFAULT_SKILLS: ReadonlyArray<{ name: string; version: string; body: string }> = [
+  { name: SKILL_NAME, version: SKILL_VERSION, body: CLIP_SKILL_MD },
+];
+
+/** Parse `<name>.<version>.md` into its name and version, or undefined if it doesn't fit. */
+export function parseSkillFileName(file: string): { name: string; version: string } | undefined {
+  const m = /^(.+)\.([^.]+)\.md$/.exec(file);
+  if (!m || !m[1] || !m[2]) return undefined;
+  return { name: m[1], version: m[2] };
 }
 
 export interface PromptStoreOptions {
-  /** Directory holding prompt JSON files; falls back to <dataDir>/prompts. */
+  /** Directory holding prompt files; falls back to <dataDir>/prompts. */
   dir?: string;
   /** Seed bundled defaults on first use (default true). */
   seedDefaults?: boolean;
@@ -105,17 +125,38 @@ export class FilesystemPromptStore implements PromptStore {
           this.log.info({ name: p.name, version: p.version }, 'seeded default prompt');
         }
       }
+      // Skills are seeded, never overwritten: an edited skill on disk is the source of
+      // truth and a later upgrade must not silently discard the user's tuning.
+      for (const s of DEFAULT_SKILLS) {
+        const fn = fileName(s.name, s.version, 'md');
+        if (!existing.has(fn)) {
+          await writeFile(join(this.dir, fn), s.body, 'utf8');
+          this.log.info({ name: s.name, version: s.version }, 'seeded default skill');
+        }
+      }
     }
     this.seeded = true;
   }
 
   private async readAll(): Promise<PromptTemplate[]> {
     await this.ensureSeeded();
-    const files = (await readdir(this.dir)).filter((f) => f.endsWith('.json'));
+    const files = await readdir(this.dir);
     const templates: PromptTemplate[] = [];
-    for (const f of files) {
+    for (const f of files.filter((n) => n.endsWith('.json'))) {
       const raw = await readFile(join(this.dir, f), 'utf8');
       templates.push(toTemplate(promptFileSchema.parse(JSON.parse(raw))));
+    }
+    for (const f of files.filter((n) => n.endsWith('.md'))) {
+      const parsed = parseSkillFileName(f);
+      if (!parsed) continue;
+      const body = await readFile(join(this.dir, f), 'utf8');
+      templates.push({
+        name: parsed.name,
+        version: parsed.version,
+        template: body,
+        variables: extractVariables(body),
+        description: 'skill (markdown)',
+      });
     }
     return templates;
   }
