@@ -8,6 +8,12 @@ const MANAGED_KEYS = [
   'CLIPPER_SCORE_TRANSCRIPT_WEIGHT',
   'CLIPPER_MIN_SCORE',
   'CLIPPER_MAX_CANDIDATES',
+  'CLIPPER_LLM_SCORE_BUDGET',
+  'CLIPPER_LLM_SCORE_BATCH',
+  'CLIPPER_SCORE_STRIDE_SEC',
+  'CLIPPER_SPICE_WORDS',
+  'CLIPPER_FILLER_WORDS',
+  'CLIPPER_DROP_UNPOSTABLE',
   'CLIPPER_MONITOR_CHANNELS',
   'CLIPPER_MONITOR_INTERVAL_SEC',
 ];
@@ -35,12 +41,28 @@ describe('config', () => {
     const cfg = getConfig();
     expect(cfg.llm.researchModel).toBe('llama-3.3-70b-versatile');
     expect(cfg.llm.captionModel).toBe('llama-3.3-70b-versatile');
-    expect(cfg.scoring.loudnessWeight).toBe(0.5);
-    expect(cfg.scoring.transcriptWeight).toBe(0.5);
+    // Transcript-dominant by default: content picks clips, loudness only breaks ties.
+    expect(cfg.scoring.transcriptWeight).toBe(0.8);
+    expect(cfg.scoring.loudnessWeight).toBe(0.2);
     expect(cfg.scoring.minScore).toBe(55);
     expect(cfg.scoring.maxCandidates).toBe(10);
+    expect(cfg.scoring.llmScoreBudget).toBe(400);
+    expect(cfg.scoring.llmScoreBatch).toBe(12);
+    expect(cfg.scoring.strideSec).toBe(15);
+    expect(cfg.scoring.spiceWords).toEqual([]);
+    expect(cfg.scoring.fillerWords).toEqual([]);
+    expect(cfg.scoring.dropUnpostable).toBe(false);
     expect(cfg.clip).toEqual({ minSec: 15, maxSec: 60, targetSec: 30 });
     expect(cfg.render.cropX).toBe('center');
+  });
+
+  it('parses prescreen word overrides and the unpostable flag', () => {
+    process.env.CLIPPER_SPICE_WORDS = ' waffle house , alligator ,';
+    process.env.CLIPPER_DROP_UNPOSTABLE = 'true';
+    resetConfigCache();
+    const cfg = getConfig();
+    expect(cfg.scoring.spiceWords).toEqual(['waffle house', 'alligator']);
+    expect(cfg.scoring.dropUnpostable).toBe(true);
   });
 
   it('coerces numeric env vars from strings', () => {

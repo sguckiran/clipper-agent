@@ -79,7 +79,7 @@ export interface LoudnessTimeline {
 
 /**
  * A candidate window the research agent thinks is clip-worthy.
- * Must satisfy the project clip-length rule (10–20s) by the time it is rendered.
+ * Must satisfy the configured clip-length rule by the time it is rendered.
  */
 export interface ClipCandidate {
   id: string;
@@ -92,6 +92,12 @@ export interface ClipCandidate {
   reason: string;
   /** Transcript text covered by the window. */
   transcriptText: string;
+  /** Moment type from the rater, e.g. 'story' | 'take' | 'rant' | 'reaction'. */
+  kind?: string;
+  /** The verbatim line the rater thinks makes the clip; the caption's best hook. */
+  quote?: string;
+  /** Rater's guess that posting this as-is would get an account banned. */
+  unpostable?: boolean;
 }
 
 /** A sensationalist caption to burn onto a clip. */

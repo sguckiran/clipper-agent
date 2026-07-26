@@ -26,14 +26,39 @@ const schema = z.object({
   // upload limit (~4.8 MB per chunk at 16 kHz mono 64 kbps for the default).
   CLIPPER_TRANSCRIBE_CHUNK_SEC: z.coerce.number().int().positive().default(600),
 
-  // Clip detection / scoring. Final score = loudnessWeight*loudness + transcriptWeight*text.
-  CLIPPER_SCORE_LOUDNESS_WEIGHT: z.coerce.number().min(0).default(0.5),
-  CLIPPER_SCORE_TRANSCRIPT_WEIGHT: z.coerce.number().min(0).default(0.5),
+  // Clip detection / scoring. Final score = transcriptWeight*whatWasSaid + loudnessWeight*loudness.
+  // Content is deliberately dominant: loudness only breaks ties between windows the
+  // LLM already rated similarly, so a quiet, deadpan, unhinged take can still win.
+  CLIPPER_SCORE_TRANSCRIPT_WEIGHT: z.coerce.number().min(0).default(0.8),
+  CLIPPER_SCORE_LOUDNESS_WEIGHT: z.coerce.number().min(0).default(0.2),
   CLIPPER_MIN_SCORE: z.coerce.number().min(0).max(100).default(55),
   CLIPPER_MAX_CANDIDATES: z.coerce.number().int().positive().default(10),
   // Minimum words/second a window must contain to be a clip candidate. Filters out
   // applause/music/cheering (loud but no speech). ~0.8 keeps talking, drops silence.
   CLIPPER_MIN_WORDS_PER_SEC: z.coerce.number().min(0).default(0.8),
+  // How many windows get LLM-rated per source. Windows above this cap are trimmed by
+  // the free lexical prescreen (content-based), NOT by loudness. Raise for better
+  // recall on long VODs, lower to cut spend.
+  CLIPPER_LLM_SCORE_BUDGET: z.coerce.number().int().positive().default(400),
+  // Snippets per LLM request. Batching is what makes rating the whole transcript
+  // affordable; too high and small models start dropping entries.
+  CLIPPER_LLM_SCORE_BATCH: z.coerce.number().int().positive().max(50).default(12),
+  // Minimum seconds between the starts of two windows sent for rating. buildWindows
+  // emits one window per sentence boundary, so without this we pay to rate dozens of
+  // near-identical overlapping snippets.
+  CLIPPER_SCORE_STRIDE_SEC: z.coerce.number().min(0).default(15),
+  // Extra comma-separated terms for the prescreen, appended to the built-ins.
+  // SPICE = words that mark clip-worthy talk for *your* streamer (inside jokes, names,
+  // recurring bits). FILLER = words that mark stream admin you never want clipped.
+  CLIPPER_SPICE_WORDS: z.string().default(''),
+  CLIPPER_FILLER_WORDS: z.string().default(''),
+  // Drop clips the rater flags as likely to get an account banned (slurs, threats at
+  // real people). Off by default — the flag is reported either way, so this only
+  // matters once you actually publish somewhere with rules.
+  CLIPPER_DROP_UNPOSTABLE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 
   // Clip length. Windows are snapped to complete sentences, aiming for TARGET and
   // kept within [MIN, MAX] seconds.
@@ -94,6 +119,17 @@ export interface Config {
     minScore: number;
     maxCandidates: number;
     minWordsPerSec: number;
+    /** Max windows to LLM-rate per source. */
+    llmScoreBudget: number;
+    /** Snippets per LLM rating request. */
+    llmScoreBatch: number;
+    /** Min seconds between the starts of two rated windows. */
+    strideSec: number;
+    /** User-supplied prescreen terms, appended to the built-in lists. */
+    spiceWords: string[];
+    fillerWords: string[];
+    /** Drop candidates the rater flags as unpostable. */
+    dropUnpostable: boolean;
   };
   clip: {
     minSec: number;
@@ -130,6 +166,14 @@ export interface Config {
   };
 }
 
+/** Split a comma-separated env value into trimmed, non-empty entries. */
+function splitCsv(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 let cached: Config | undefined;
 
 /** Parse and cache config. Throws if env is structurally invalid. */
@@ -151,6 +195,12 @@ export function getConfig(): Config {
       minScore: env.CLIPPER_MIN_SCORE,
       maxCandidates: env.CLIPPER_MAX_CANDIDATES,
       minWordsPerSec: env.CLIPPER_MIN_WORDS_PER_SEC,
+      llmScoreBudget: env.CLIPPER_LLM_SCORE_BUDGET,
+      llmScoreBatch: env.CLIPPER_LLM_SCORE_BATCH,
+      strideSec: env.CLIPPER_SCORE_STRIDE_SEC,
+      spiceWords: splitCsv(env.CLIPPER_SPICE_WORDS),
+      fillerWords: splitCsv(env.CLIPPER_FILLER_WORDS),
+      dropUnpostable: env.CLIPPER_DROP_UNPOSTABLE,
     },
     clip: {
       minSec: env.CLIPPER_CLIP_MIN_SEC,
@@ -165,9 +215,7 @@ export function getConfig(): Config {
       cropX: env.CLIPPER_CROP_X,
     },
     monitor: {
-      channels: env.CLIPPER_MONITOR_CHANNELS.split(',')
-        .map((c) => c.trim())
-        .filter((c) => c.length > 0),
+      channels: splitCsv(env.CLIPPER_MONITOR_CHANNELS),
       intervalSec: env.CLIPPER_MONITOR_INTERVAL_SEC,
     },
     publish: {

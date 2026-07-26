@@ -10,6 +10,7 @@ import { z } from 'zod';
 import type { PromptStore, PromptTemplate } from '../core/contracts.js';
 import { createLogger } from '../core/logger.js';
 import { dataPaths } from '../core/paths.js';
+import { SCORER_SYSTEM } from '../research/scorer.js';
 
 const promptFileSchema = z.object({
   name: z.string(),
@@ -41,12 +42,12 @@ export function interpolate(template: string, vars: Record<string, string | numb
 export const DEFAULT_PROMPTS: PromptTemplate[] = [
   {
     name: 'clip-research',
-    version: 'v1',
-    description: 'Tiny-model rating of a transcript snippet for clip-worthiness.',
-    template:
-      'Rate how likely this snippet is to go viral as a clip (0-10). ' +
-      'Reply ONLY JSON {"rating":<0-10>,"reason":"<max 8 words>"}.\n\nSnippet: {{snippet}}',
-    variables: ['snippet'],
+    version: 'v2',
+    description: 'Content rating of a batch of transcript snippets for clip-worthiness.',
+    // Mirrors SCORER_SYSTEM in src/research/scorer.ts so the rubric can be tuned from
+    // disk. Keep the two in step when editing either.
+    template: `${SCORER_SYSTEM}\n\nSnippets:\n{{snippets}}`,
+    variables: ['snippets'],
   },
   {
     name: 'clip-caption',

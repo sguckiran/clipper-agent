@@ -22,23 +22,40 @@ in [`src/pipeline`](src/pipeline).
 
 ## How a clip is "triggered"
 
-Clip detection combines **loudness** (crowd reactions, laughter, shouting — free to compute
-from audio) with **speech density** and an **LLM judgement**, and only cuts on complete
-thoughts:
+Selection is **content-first**: what was actually said picks the clips. Loudness is kept only
+as a tiebreaker between windows the rater already liked about equally, because a loud moment
+with no payoff is not a clip and the funniest thing in a stream is often said flatly.
 
 1. **Coherent windows** — the transcript is sliced into candidate windows that **start and
    end on sentence boundaries** (or pauses) and aim for a target length within
-   `[CLIPPER_CLIP_MIN_SEC, CLIPPER_CLIP_MAX_SEC]` (default 15–60s, target 30s). No more
-   mid-sentence 10-second cuts.
+   `[CLIPPER_CLIP_MIN_SEC, CLIPPER_CLIP_MAX_SEC]` (default 15–60s, target 30s).
 2. **Speech gate** — windows without enough talking (`CLIPPER_MIN_WORDS_PER_SEC`) are dropped,
    so pure applause/music/cheering never becomes a clip.
-3. **Pre-rank** on loudness × speech density, then a Groq model rates the shortlist for how
-   good a self-contained clip each would make.
-4. Loudness + LLM scores are combined (default **50/50**), thresholded on `CLIPPER_MIN_SCORE`,
+3. **Thin duplicates** — one window per sentence boundary means neighbours say nearly the same
+   thing; only windows `CLIPPER_SCORE_STRIDE_SEC` apart go forward.
+4. **Content prescreen** (free, no API calls) — if there are still more windows than
+   `CLIPPER_LLM_SCORE_BUDGET`, the survivors are chosen on _text_: marker vocabulary, how rare
+   a window's words are for this streamer (a topic tangent looks like unusual vocabulary), and
+   question density — minus stream-admin filler (sponsor reads, "queue up", "gg"), all scaled
+   by word variety so chanting and screaming can't buy their way in. It counts questions but
+   deliberately **not** exclamation marks: `!` measures delivery, and rewarding it just
+   smuggles the loudness bias back in through the transcript.
+5. **LLM rating** — a Groq model rates each surviving window 0–100 against an anchored rubric,
+   batched `CLIPPER_LLM_SCORE_BATCH` snippets per request so rating hundreds of windows costs
+   tens of calls. It returns a score, a moment type, and the **verbatim punchline**, which is
+   used both to trim trailing dead air off the clip and as the caption's hook.
+6. Content + loudness are combined (default **80/20**), thresholded on `CLIPPER_MIN_SCORE`,
    de-overlapped, and the top N become clips.
 
-Everything here — weights, threshold, clip length, speech gate, candidate cap — is
-configurable (see [Configuration](#configuration)).
+The rubric tells the rater to judge entertainment value only and _not_ to dock points for
+profanity, crude, dark or tasteless content — these are unfiltered streams and that material
+is most of what clips well. Asked a bare "is this a good clip?", a model hedges on exactly
+that content and returns a flat mid score for everything, which silently hands ranking back
+to loudness. Tune per streamer with `CLIPPER_SPICE_WORDS` (inside jokes, recurring bits, names
+worth catching) and `CLIPPER_FILLER_WORDS` (whatever their stream admin sounds like).
+
+Everything here — weights, threshold, clip length, speech gate, rating budget, candidate cap —
+is configurable (see [Configuration](#configuration)).
 
 ## Requirements
 
@@ -133,16 +150,25 @@ see `.env.example` for the full list. Key options:
 | `CLIPPER_RESEARCH_MODEL` / `CLIPPER_CAPTION_MODEL`     | `llama-3.3-70b-versatile` | Groq model for scoring/captions; drop to `llama-3.1-8b-instant` to cut cost |
 | `CLIPPER_CLIP_MIN_SEC` / `_MAX_SEC` / `_TARGET_SEC`    | `15` / `60` / `30`        | Clip length bounds + target (sentence-aligned)                              |
 | `CLIPPER_MIN_WORDS_PER_SEC`                            | `0.8`                     | Speech gate (drops applause/music)                                          |
-| `CLIPPER_SCORE_LOUDNESS_WEIGHT` / `_TRANSCRIPT_WEIGHT` | `0.5` / `0.5`             | Score blend                                                                 |
+| `CLIPPER_SCORE_TRANSCRIPT_WEIGHT` / `_LOUDNESS_WEIGHT` | `0.8` / `0.2`             | Score blend; content-dominant by design                                     |
 | `CLIPPER_MIN_SCORE`                                    | `55`                      | Threshold for a candidate                                                   |
 | `CLIPPER_MAX_CANDIDATES`                               | `10`                      | Cap per source                                                              |
+| `CLIPPER_LLM_SCORE_BUDGET`                             | `400`                     | Max windows rated per source; raise for recall, lower to cut spend          |
+| `CLIPPER_LLM_SCORE_BATCH`                              | `12`                      | Snippets per rating request                                                 |
+| `CLIPPER_SCORE_STRIDE_SEC`                             | `15`                      | Min gap between rated windows (drops near-duplicates)                       |
+| `CLIPPER_SPICE_WORDS` / `CLIPPER_FILLER_WORDS`         | — / —                     | Per-streamer prescreen terms to favour / penalise                           |
+| `CLIPPER_DROP_UNPOSTABLE`                              | `false`                   | Drop clips the rater flags as account-ban risk (slurs, threats)             |
 | `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
 | `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                 | Channels to poll + interval                                                 |
 | `CLIPPER_DATA_DIR`                                     | OS default                | Where downloads / clips / queue live                                        |
 | `LOG_FORMAT`                                           | `pretty`                  | Set to `json` for production/log aggregation                                |
 
 **Tuning:** clip quality is config, not a rebuild — adjust length (`CLIPPER_CLIP_*`),
-`CLIPPER_MIN_SCORE`, the loudness/transcript split, or `CLIPPER_CROP_X`, then restart.
+`CLIPPER_MIN_SCORE`, the transcript/loudness split, the prescreen word lists, or
+`CLIPPER_CROP_X`, then restart. If clips feel too safe, raise `CLIPPER_LLM_SCORE_BUDGET` (more
+of the VOD gets read) and add the streamer's own vocabulary to `CLIPPER_SPICE_WORDS`. The
+rating prompt itself is versioned in the prompt store as `clip-research` (`clipper prompts`)
+and mirrored in [`src/research/scorer.ts`](src/research/scorer.ts).
 
 ## Running on a VM (24/7, automated)
 

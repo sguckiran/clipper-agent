@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ClipCandidate } from '../core/types.js';
 import type { ChatClient } from '../llm/groq.js';
-import { fallbackCaption, LlmCaptionWriter, parseCaption } from './caption.js';
+import { captionInput, fallbackCaption, LlmCaptionWriter, parseCaption } from './caption.js';
 
 const candidate: ClipCandidate = {
   id: 'src-1.0',
@@ -23,13 +23,34 @@ describe('parseCaption', () => {
 });
 
 describe('fallbackCaption', () => {
-  it('uses the first few transcript words', () => {
+  it('prefers the rater’s punchline quote over the setup words', () => {
+    expect(fallbackCaption({ ...candidate, quote: 'he ate the whole thing raw' })).toBe(
+      'he ate the whole thing raw',
+    );
+  });
+  it('uses the first few transcript words when there is no quote', () => {
     expect(fallbackCaption(candidate)).toBe(
+      'and then absolutely everything went completely wrong on',
+    );
+  });
+  it('ignores a blank quote', () => {
+    expect(fallbackCaption({ ...candidate, quote: '  ' })).toBe(
       'and then absolutely everything went completely wrong on',
     );
   });
   it('falls back to the reason when there is no transcript', () => {
     expect(fallbackCaption({ ...candidate, transcriptText: '' })).toBe('big reaction');
+  });
+});
+
+describe('captionInput', () => {
+  it('leads with the punchline when one is present', () => {
+    expect(captionInput({ ...candidate, quote: 'raw, shell and all' })).toBe(
+      `Punchline: raw, shell and all\n\nTranscript: ${candidate.transcriptText}`,
+    );
+  });
+  it('sends the transcript alone otherwise', () => {
+    expect(captionInput(candidate)).toBe(candidate.transcriptText);
   });
 });
 

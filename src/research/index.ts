@@ -1,17 +1,22 @@
 /**
  * Research module: decides *when to trigger a clip*. Implements {@link ClipDetector}.
  *
- * Scoring is loudness-primary + a tiny LLM confirm, combined per configured weights
- * (default 50/50):
- *   1. Slide over transcript segments to build valid 10–20s windows.
- *   2. Score each window's loudness (deterministic, from the ffmpeg timeline).
- *   3. Shortlist the loudest windows and ask a tiny LLM to rate the transcript text.
- *   4. Combine, threshold on minScore, de-overlap, and return the top N candidates.
+ * Selection is **content-first**. What was said picks the clips; loudness only breaks
+ * ties between windows the rater already liked about equally:
+ *   1. Build coherent, sentence-aligned windows over the transcript.
+ *   2. Gate out windows with no real speech (applause, music, dead air).
+ *   3. Thin near-duplicate overlapping windows so rating spend isn't wasted.
+ *   4. Rank what's left by the free lexical prescreen and keep the top `llmScoreBudget`.
+ *   5. Batch-rate those on transcript content (0–100) with a small LLM.
+ *   6. Combine (transcript-dominant), trim each clip to end on its punchline, threshold,
+ *      de-overlap, return the top N.
  *
- * The LLM prompt is deliberately minimal so a small, cheap model handles it; if the
- * scorer fails, the window still scores on loudness with a neutral text score.
+ * The ordering matters. An earlier version ranked windows by loudness and only showed the
+ * loudest ~40 to the LLM, which meant content could reorder a loudness shortlist but never
+ * select against it: anything said quietly was unreachable no matter how good it was.
+ * Steps 3–4 replace that gate with a text-based one, so the funniest quiet moment in a
+ * six-hour VOD can still win.
  */
-import { z } from 'zod';
 import { getConfig } from '../config/index.js';
 import type { ClipDetector, DetectOptions } from '../core/contracts.js';
 import { createLogger } from '../core/logger.js';
@@ -23,19 +28,11 @@ import {
   type Transcript,
   type TranscriptSegment,
 } from '../core/types.js';
-import type { ChatClient } from '../llm/groq.js';
+import { createPrescreen } from './prescreen.js';
+import { NEUTRAL_SCORE, type ScoredText, type TranscriptScorer } from './scorer.js';
 
-export interface ScoredText {
-  /** 0–10 clip-worthiness of the transcript text. */
-  rating: number;
-  /** Very short rationale. */
-  reason: string;
-}
-
-/** Rates a short transcript snippet. Backed by a tiny LLM (see createChatScorer). */
-export interface TranscriptScorer {
-  score(text: string): Promise<ScoredText>;
-}
+export * from './prescreen.js';
+export * from './scorer.js';
 
 export interface WindowCandidate {
   startSec: number;
@@ -71,8 +68,7 @@ function startsNewSentence(segments: TranscriptSegment[], i: number, gapSec: num
 /**
  * Build clip windows that are **coherent and target-length**: each starts at a
  * sentence/topic boundary and ends at a sentence end (or a pause), growing toward
- * `targetSec` and staying within `[minSec, maxSec]`. This replaces the old "cut the
- * first 10s" behaviour that produced short, mid-sentence clips.
+ * `targetSec` and staying within `[minSec, maxSec]`.
  */
 export function buildWindows(
   segments: TranscriptSegment[],
@@ -130,15 +126,6 @@ export function wordCount(text: string): number {
   return t.length === 0 ? 0 : t.split(/\s+/).length;
 }
 
-/**
- * Map speech density (words/second) to 0–100. Normal speech is ~2–3 wps, so
- * `targetWps` maps to 100; silence/applause (few words) scores near 0. This keeps
- * clips anchored to actual talking rather than raw noise (applause, music, cheers).
- */
-export function speechDensityScore(wordsPerSec: number, targetWps = 3): number {
-  return clamp((wordsPerSec / targetWps) * 100, 0, 100);
-}
-
 /** Weighted combination of the two 0–100 signals, normalized by the weight sum. */
 export function combineScores(
   loud: number,
@@ -186,6 +173,78 @@ export function createLoudnessLookup(
   };
 }
 
+/**
+ * Keep windows whose starts are at least `strideSec` apart, in transcript order.
+ *
+ * buildWindows emits one window per sentence boundary, so consecutive windows overlap
+ * almost entirely and say nearly the same thing. Rating all of them burns the budget on
+ * duplicates that dedupeOverlapping would discard afterwards anyway.
+ */
+export function thinByStride<T extends { startSec: number }>(
+  windows: readonly T[],
+  strideSec: number,
+): T[] {
+  if (strideSec <= 0) return [...windows];
+  const kept: T[] = [];
+  let lastStart = -Infinity;
+  for (const w of windows) {
+    if (w.startSec - lastStart >= strideSec) {
+      kept.push(w);
+      lastStart = w.startSec;
+    }
+  }
+  return kept;
+}
+
+/** Lowercase and strip punctuation so quote matching survives transcript formatting. */
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * Trim trailing talk that follows the punchline, so a clip ends on the line that makes it
+ * rather than on whatever was said next.
+ *
+ * Deliberately conservative — sentence-aligned windows are why clips read as coherent, so
+ * this only cuts on a segment boundary, only when the quote is actually found, only when
+ * it saves real time, and never below `minSec`.
+ */
+export function trimTrailingAfterQuote(
+  window: WindowCandidate,
+  quote: string,
+  segments: readonly TranscriptSegment[],
+  minSec: number,
+  minSavingSec = 2,
+): WindowCandidate {
+  const needle = normalize(quote);
+  if (needle.length < 12) return window;
+
+  const inWindow = segments.filter(
+    (s) => s.start >= window.startSec && s.end <= window.endSec + 0.001,
+  );
+  // Walk forward and stop at the first segment by which the quote has fully appeared.
+  let acc = '';
+  for (const [i, seg] of inWindow.entries()) {
+    acc = acc ? `${acc} ${normalize(seg.text)}` : normalize(seg.text);
+    if (!acc.includes(needle)) continue;
+    if (window.endSec - seg.end < minSavingSec) return window;
+    if (seg.end - window.startSec < minSec) return window;
+    return {
+      startSec: window.startSec,
+      endSec: seg.end,
+      text: inWindow
+        .slice(0, i + 1)
+        .map((s) => s.text)
+        .join(' '),
+    };
+  }
+  return window;
+}
+
 /** Greedily keep the highest-scoring non-overlapping candidates (input sorted desc). */
 export function dedupeOverlapping(sortedDesc: ClipCandidate[]): ClipCandidate[] {
   const kept: ClipCandidate[] = [];
@@ -196,39 +255,6 @@ export function dedupeOverlapping(sortedDesc: ClipCandidate[]): ClipCandidate[] 
   return kept;
 }
 
-const scoreSchema = z.object({
-  rating: z.coerce.number(),
-  reason: z.string().default(''),
-});
-
-/** Parse a tiny-LLM JSON rating, clamping to 0–10. Throws on unparseable input. */
-export function parseScore(raw: string): ScoredText {
-  const parsed = scoreSchema.parse(JSON.parse(raw));
-  return { rating: clamp(parsed.rating, 0, 10), reason: parsed.reason.trim() };
-}
-
-const SCORER_SYSTEM =
-  'You rate how good a short video clip this transcript snippet would make (0-10). ' +
-  'High = a self-contained moment that is funny, surprising, quotable, or a high-energy ' +
-  'reaction. Low = filler, mid-sentence, or nothing is really said. ' +
-  'Reply ONLY with JSON: {"rating": <integer 0-10>, "reason": "<max 8 words>"}.';
-
-/** Build a {@link TranscriptScorer} from a chat client + small model name. */
-export function createChatScorer(chat: ChatClient, model: string): TranscriptScorer {
-  return {
-    async score(text) {
-      const content = await chat.complete(
-        [
-          { role: 'system', content: SCORER_SYSTEM },
-          { role: 'user', content: text.slice(0, 500) },
-        ],
-        { model, temperature: 0, maxTokens: 60, json: true },
-      );
-      return parseScore(content);
-    },
-  };
-}
-
 export interface ClipDetectorOptions {
   scorer: TranscriptScorer;
   loudnessWeight?: number;
@@ -237,14 +263,21 @@ export interface ClipDetectorOptions {
   maxCandidates?: number;
   /** Minimum words/second a window must have to be considered (speech gate). */
   minWordsPerSec?: number;
+  /** Max windows to send for LLM rating. */
+  llmScoreBudget?: number;
+  /** Min seconds between the starts of two rated windows. */
+  strideSec?: number;
+  /** Extra prescreen terms for this streamer. */
+  spiceWords?: readonly string[];
+  fillerWords?: readonly string[];
+  /** Drop candidates the rater flags as unpostable. */
+  dropUnpostable?: boolean;
   /** Clip length bounds / target (seconds); fall back to config. */
   minSec?: number;
   maxSec?: number;
   targetSec?: number;
   /** dB above baseline that maps loudness to 100. */
   loudnessRangeDb?: number;
-  /** Shortlist size (for LLM scoring) as a multiple of the candidate limit. */
-  shortlistMultiplier?: number;
 }
 
 export class ScoringClipDetector implements ClipDetector {
@@ -254,11 +287,15 @@ export class ScoringClipDetector implements ClipDetector {
   private readonly minScore: number;
   private readonly maxCandidates: number;
   private readonly minWordsPerSec: number;
+  private readonly llmScoreBudget: number;
+  private readonly strideSec: number;
+  private readonly spiceWords: readonly string[];
+  private readonly fillerWords: readonly string[];
+  private readonly dropUnpostable: boolean;
   private readonly minSec: number;
   private readonly maxSec: number;
   private readonly targetSec: number;
   private readonly rangeDb: number;
-  private readonly shortlistMultiplier: number;
   private readonly log = createLogger('research');
 
   constructor(opts: ClipDetectorOptions) {
@@ -269,11 +306,15 @@ export class ScoringClipDetector implements ClipDetector {
     this.minScore = opts.minScore ?? cfg.scoring.minScore;
     this.maxCandidates = opts.maxCandidates ?? cfg.scoring.maxCandidates;
     this.minWordsPerSec = opts.minWordsPerSec ?? cfg.scoring.minWordsPerSec;
+    this.llmScoreBudget = opts.llmScoreBudget ?? cfg.scoring.llmScoreBudget;
+    this.strideSec = opts.strideSec ?? cfg.scoring.strideSec;
+    this.spiceWords = opts.spiceWords ?? cfg.scoring.spiceWords;
+    this.fillerWords = opts.fillerWords ?? cfg.scoring.fillerWords;
+    this.dropUnpostable = opts.dropUnpostable ?? cfg.scoring.dropUnpostable;
     this.minSec = opts.minSec ?? cfg.clip.minSec;
     this.maxSec = opts.maxSec ?? cfg.clip.maxSec;
     this.targetSec = opts.targetSec ?? cfg.clip.targetSec;
     this.rangeDb = opts.loudnessRangeDb ?? 12;
-    this.shortlistMultiplier = opts.shortlistMultiplier ?? 4;
   }
 
   async detect(
@@ -289,68 +330,78 @@ export class ScoringClipDetector implements ClipDetector {
       maxSec: this.maxSec,
       targetSec: this.targetSec,
     });
-    const meanRms = createLoudnessLookup(loudness);
-    const scored = windows.map((w) => {
-      const dur = Math.max(w.endSec - w.startSec, 0.001);
-      const wps = wordCount(w.text) / dur;
-      return {
-        w,
-        wps,
-        loud: loudnessScore(meanRms(w.startSec, w.endSec), loudness.baselineRms, this.rangeDb),
-        speech: speechDensityScore(wps),
-      };
-    });
 
-    // Speech gate: drop windows without enough talking (kills applause/music/cheers
-    // that are loud but have no content). Then pre-rank on loudness AND speech so both
-    // punchy spoken moments and high-energy reactions surface — not just the loudest.
-    const withSpeech = scored.filter((s) => s.wps >= this.minWordsPerSec);
-    const preRanked = withSpeech
-      .map((s) => ({
-        ...s,
-        pre: combineScores(s.loud, s.speech, this.loudnessWeight, this.transcriptWeight),
-      }))
-      .sort((a, b) => b.pre - a.pre);
-    const shortlist = preRanked.slice(0, Math.max(limit * this.shortlistMultiplier, limit));
+    // Speech gate: no talking, no clip. Kills applause/music/cheering, which are loud but
+    // say nothing — and which a loudness-led detector reliably mistakes for gold.
+    const speaking = windows.filter((w) => {
+      const dur = Math.max(w.endSec - w.startSec, 0.001);
+      return wordCount(w.text) / dur >= this.minWordsPerSec;
+    });
+    const thinned = thinByStride(speaking, this.strideSec);
+
+    // Choose who gets rated, on *content*. Only bites when there are more windows than
+    // budget; under the cap every speaking window is rated and the prescreen is a no-op.
+    let selected = thinned;
+    if (thinned.length > this.llmScoreBudget) {
+      const prescreen = createPrescreen(
+        thinned.map((w) => w.text),
+        { spiceWords: this.spiceWords, fillerWords: this.fillerWords },
+      );
+      selected = thinned
+        .map((w) => ({ w, pre: prescreen.score(w.text, w.endSec - w.startSec).score }))
+        .sort((a, b) => b.pre - a.pre)
+        .slice(0, this.llmScoreBudget)
+        .map((s) => s.w);
+    }
     this.log.info(
       {
         windows: windows.length,
-        withSpeech: withSpeech.length,
-        shortlist: shortlist.length,
+        speaking: speaking.length,
+        thinned: thinned.length,
+        rated: selected.length,
         limit,
       },
-      'scoring shortlist',
+      'rating windows on transcript content',
     );
 
+    const ratings = await this.scorer.scoreBatch(selected.map((w) => w.text));
+    const meanRms = createLoudnessLookup(loudness);
+
     const candidates: ClipCandidate[] = [];
-    for (const { w, loud } of shortlist) {
-      let text: ScoredText;
-      try {
-        text = await this.scorer.score(w.text);
-      } catch (err) {
-        this.log.warn({ err: (err as Error).message }, 'text scorer failed; using neutral score');
-        text = { rating: 5, reason: '(text scorer unavailable)' };
+    let droppedUnpostable = 0;
+    for (const [i, w] of selected.entries()) {
+      const rating: ScoredText = ratings[i] ?? { ...NEUTRAL_SCORE };
+      if (rating.unpostable && this.dropUnpostable) {
+        droppedUnpostable++;
+        continue;
       }
-      const score = combineScores(
-        loud,
-        text.rating * 10,
-        this.loudnessWeight,
-        this.transcriptWeight,
+      const trimmed = trimTrailingAfterQuote(w, rating.quote, transcript.segments, this.minSec);
+      const loud = loudnessScore(
+        meanRms(trimmed.startSec, trimmed.endSec),
+        loudness.baselineRms,
+        this.rangeDb,
       );
+      const score = combineScores(loud, rating.score, this.loudnessWeight, this.transcriptWeight);
       candidates.push({
-        id: `${transcript.sourceId}-${w.startSec.toFixed(1)}`,
+        id: `${transcript.sourceId}-${trimmed.startSec.toFixed(1)}`,
         sourceId: transcript.sourceId,
-        startSec: w.startSec,
-        endSec: w.endSec,
+        startSec: trimmed.startSec,
+        endSec: trimmed.endSec,
         score: Math.round(score),
-        reason: text.reason || `loud moment (${Math.round(loud)}/100)`,
-        transcriptText: w.text,
+        reason: rating.reason || rating.kind,
+        transcriptText: trimmed.text,
+        kind: rating.kind,
+        quote: rating.quote,
+        unpostable: rating.unpostable,
       });
     }
 
     const ranked = candidates.filter((c) => c.score >= minScore).sort((a, b) => b.score - a.score);
     const result = dedupeOverlapping(ranked).slice(0, limit);
-    this.log.info({ candidates: result.length }, 'detection complete');
+    this.log.info(
+      { candidates: result.length, aboveThreshold: ranked.length, droppedUnpostable },
+      'detection complete',
+    );
     return result;
   }
 }

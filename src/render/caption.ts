@@ -18,18 +18,33 @@ export function parseCaption(raw: string): string {
   return captionSchema.parse(JSON.parse(raw)).caption.trim();
 }
 
-/** Deterministic caption used when the LLM is unavailable. */
+/**
+ * Deterministic caption used when the LLM is unavailable. Prefers the rater's punchline
+ * quote — it is the line the clip exists for, so it beats the first eight words, which
+ * are usually the setup.
+ */
 export function fallbackCaption(candidate: ClipCandidate): string {
+  const quote = candidate.quote?.trim();
+  if (quote) return quote.split(/\s+/).slice(0, 12).join(' ');
   const words = candidate.transcriptText.trim().split(/\s+/).filter(Boolean).slice(0, 8);
   if (words.length > 0) return words.join(' ');
   return candidate.reason || 'You have to see this';
 }
 
+/** Prompt input: the transcript, plus the punchline to build the caption around. */
+export function captionInput(candidate: ClipCandidate): string {
+  const quote = candidate.quote?.trim();
+  const transcript = candidate.transcriptText.slice(0, 600);
+  return quote ? `Punchline: ${quote}\n\nTranscript: ${transcript}` : transcript;
+}
+
 const CAPTION_SYSTEM =
   'You write one short, catchy caption for a vertical video clip, based ONLY on the ' +
   'transcript given. It must accurately reflect what is actually said — do NOT invent ' +
-  'names, events, or drama. Engaging but truthful. ' +
-  'Reply ONLY with JSON: {"caption": "<max 12 words, no hashtags, no quotes>"}.';
+  'names, events, or drama. Engaging but truthful. When a punchline line is provided, ' +
+  "build the caption around that moment. Match the clip's own register: these are " +
+  'unfiltered streams, so blunt and crude is fine and sanitising it makes a worse ' +
+  'caption. Reply ONLY with JSON: {"caption": "<max 12 words, no hashtags, no quotes>"}.';
 
 export interface CaptionWriterOptions {
   chat: ChatClient;
@@ -51,7 +66,7 @@ export class LlmCaptionWriter implements CaptionWriter {
       const content = await this.chat.complete(
         [
           { role: 'system', content: CAPTION_SYSTEM },
-          { role: 'user', content: candidate.transcriptText.slice(0, 600) },
+          { role: 'user', content: captionInput(candidate) },
         ],
         { model: this.model, temperature: 0.7, maxTokens: 60, json: true },
       );

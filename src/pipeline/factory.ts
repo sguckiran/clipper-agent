@@ -21,7 +21,13 @@ export function createDefaultPipeline(): ClippingPipeline {
     downloader: createDownloader(),
     transcriber: new GroqTranscriber({ client: createGroqTranscriptionClient() }),
     loudness: createLoudnessAnalyzer(),
-    detector: createClipDetector({ scorer: createChatScorer(chat, cfg.llm.researchModel) }),
+    detector: createClipDetector({
+      scorer: createChatScorer({
+        chat,
+        model: cfg.llm.researchModel,
+        batchSize: cfg.scoring.llmScoreBatch,
+      }),
+    }),
     captionWriter: createCaptionWriter({ chat }),
     renderer: createRenderer(),
   });
