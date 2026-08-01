@@ -102,8 +102,19 @@ export function buildFilterSpec(
   panels: readonly PanelRect[],
   subtitleFile?: string,
 ): FilterSpec {
+  const titleCaption =
+    subtitleFile && layout === 'fill' && caption.style?.position === undefined
+      ? {
+          ...caption,
+          style: {
+            ...caption.style,
+            position: 'top' as const,
+            fontSizePx: caption.style?.fontSizePx ?? 54,
+          },
+        }
+      : caption;
   const postFilters: string[] = [];
-  const draw = drawtextFilter(caption, fontFile, textFile);
+  const draw = drawtextFilter(titleCaption, fontFile, textFile);
   if (draw) postFilters.push(draw);
   if (subtitleFile) postFilters.push(subtitlesFilter(subtitleFile, fontFile));
 
@@ -113,7 +124,7 @@ export function buildFilterSpec(
       panels,
       postFilters.map((filter) =>
         filter.startsWith('drawtext=')
-          ? drawtextFilter(caption, fontFile, textFile, stackCaptionY(stackedH, stripH))!
+          ? drawtextFilter(titleCaption, fontFile, textFile, stackCaptionY(stackedH, stripH))!
           : filter,
       ),
     );

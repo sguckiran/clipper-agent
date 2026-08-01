@@ -169,6 +169,21 @@ describe('buildFilterSpec', () => {
     expect(vf(spec)).toContain('drawtext');
   });
 
+  it('moves the static hook to the top when synced subtitles are burned', () => {
+    const spec = buildFilterSpec(
+      { text: 'WOW' },
+      FONT,
+      TEXT,
+      'fill',
+      'center',
+      [],
+      '/tmp/subtitles.ass',
+    );
+    expect(vf(spec)).toContain('subtitles=filename=');
+    expect(vf(spec)).toContain('fontsize=54');
+    expect(vf(spec)).toContain('y=text_h');
+  });
+
   it('stack layout crops panels and puts the caption in the strip', () => {
     const spec = buildFilterSpec({ text: 'WOW' }, FONT, TEXT, 'stack', 'center', PANELS);
     expect(spec.kind).toBe('complex');
