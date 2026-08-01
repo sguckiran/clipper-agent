@@ -27,6 +27,7 @@ import {
   type LoudnessTimeline,
   type Transcript,
   type TranscriptSegment,
+  type TranscriptWord,
 } from '../core/types.js';
 import { createPrescreen } from './prescreen.js';
 import { NEUTRAL_SCORE, type ScoredText, type TranscriptScorer } from './scorer.js';
@@ -40,6 +41,7 @@ export interface WindowCandidate {
   startSec: number;
   endSec: number;
   text: string;
+  words?: TranscriptWord[];
 }
 
 export interface WindowOptions {
@@ -84,12 +86,18 @@ export function buildWindows(
     if (!startsNewSentence(segments, i, gapSec)) continue;
     const start = segments[i]?.start ?? 0;
     let acc = '';
+    const words: TranscriptWord[] = [];
+    let sawTimedWords = false;
     let best: WindowCandidate | undefined;
 
     for (let j = i; j < segments.length; j++) {
       const seg = segments[j];
       if (!seg) break;
       acc = acc ? `${acc} ${seg.text}` : seg.text;
+      if (seg.words && seg.words.length > 0) {
+        sawTimedWords = true;
+        words.push(...seg.words);
+      }
       const dur = seg.end - start;
       if (dur > maxSec) break;
 
@@ -100,13 +108,28 @@ export function buildWindows(
         (next ? next.start - seg.end >= gapSec : false);
 
       if (dur >= minSec && isBreak) {
-        best = { startSec: start, endSec: seg.end, text: acc };
+        best = {
+          startSec: start,
+          endSec: seg.end,
+          text: acc,
+          ...(sawTimedWords ? { words: [...words] } : {}),
+        };
         if (dur >= targetSec) break; // long enough; end on this sentence
       }
     }
     if (best) windows.push(best);
   }
   return windows;
+}
+
+/** Keep the timed words that overlap a clip window. */
+function wordsInRange(
+  words: readonly TranscriptWord[] | undefined,
+  startSec: number,
+  endSec: number,
+): TranscriptWord[] | undefined {
+  const kept = (words ?? []).filter((w) => w.end > startSec - 0.001 && w.start < endSec + 0.001);
+  return kept.length > 0 ? kept : undefined;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -304,6 +327,7 @@ export function trimTrailingAfterQuote(
       .slice(0, found.endIdx + 1)
       .map((s) => s.text)
       .join(' '),
+    ...(window.words ? { words: wordsInRange(window.words, window.startSec, seg.end) } : {}),
   };
 }
 
@@ -339,7 +363,12 @@ export function trimLeadingBeforeQuote(
   if (start <= window.startSec) return window;
   if (window.endSec - start < minSec) return window;
   const kept = inWindow.filter((s) => s.end > start);
-  return { startSec: start, endSec: window.endSec, text: kept.map((s) => s.text).join(' ') };
+  return {
+    startSec: start,
+    endSec: window.endSec,
+    text: kept.map((s) => s.text).join(' '),
+    ...(window.words ? { words: wordsInRange(window.words, start, window.endSec) } : {}),
+  };
 }
 
 /**
@@ -552,6 +581,7 @@ export class ScoringClipDetector implements ClipDetector {
         score: Math.round(score),
         reason: rating.reason || rating.kind,
         transcriptText: trimmed.text,
+        ...(trimmed.words ? { words: trimmed.words } : {}),
         kind: rating.kind,
         quote: rating.punchQuote,
         hookQuote: rating.hookQuote,

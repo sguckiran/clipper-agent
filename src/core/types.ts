@@ -92,6 +92,8 @@ export interface ClipCandidate {
   reason: string;
   /** Transcript text covered by the window. */
   transcriptText: string;
+  /** Word-level transcript covered by the window, when the transcriber provided timings. */
+  words?: TranscriptWord[];
   /** Moment type from the rater, e.g. 'story' | 'take' | 'rant' | 'reaction'. */
   kind?: string;
   /** The verbatim line the clip pays off on; the caption's best hook. */

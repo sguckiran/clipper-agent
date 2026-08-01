@@ -22,9 +22,15 @@ import {
   type LayoutMode,
   type PanelRect,
 } from './layout.js';
+import {
+  subtitlesFilter,
+  subtitlesForCandidate,
+  type SubtitleStyle,
+} from './subtitles.js';
 
 export { createCaptionWriter, LlmCaptionWriter } from './caption.js';
 export * from './layout.js';
+export * from './subtitles.js';
 
 /**
  * Escape a file path for a drawtext `fontfile=`/`textfile=` value: forward slashes,
@@ -94,17 +100,26 @@ export function buildFilterSpec(
   layout: LayoutMode,
   cropX: string,
   panels: readonly PanelRect[],
+  subtitleFile?: string,
 ): FilterSpec {
+  const postFilters: string[] = [];
+  const draw = drawtextFilter(caption, fontFile, textFile);
+  if (draw) postFilters.push(draw);
+  if (subtitleFile) postFilters.push(subtitlesFilter(subtitleFile, fontFile));
+
   if (layout === 'stack') {
     const { stackedH, stripH } = stackMetrics(panels);
     return stackGraph(
       panels,
-      drawtextFilter(caption, fontFile, textFile, stackCaptionY(stackedH, stripH)),
+      postFilters.map((filter) =>
+        filter.startsWith('drawtext=')
+          ? drawtextFilter(caption, fontFile, textFile, stackCaptionY(stackedH, stripH))!
+          : filter,
+      ),
     );
   }
   const parts = fillChain(cropX);
-  const draw = drawtextFilter(caption, fontFile, textFile);
-  if (draw) parts.push(draw);
+  parts.push(...postFilters);
   return { kind: 'vf', filter: parts.join(',') };
 }
 
@@ -161,6 +176,8 @@ export interface RendererOptions {
   panels?: readonly PanelRect[];
   /** Fixed output directory; falls back to the data clips dir. */
   outDir?: string;
+  /** Synced subtitle burn-in style; falls back to config. */
+  subtitles?: SubtitleStyle;
 }
 
 export class FfmpegRenderer implements Renderer {
@@ -172,6 +189,7 @@ export class FfmpegRenderer implements Renderer {
   private readonly layout: LayoutMode;
   private readonly panels: readonly PanelRect[];
   private readonly outDirOverride?: string;
+  private readonly subtitles: SubtitleStyle;
   private readonly log = createLogger('render');
 
   constructor(opts: RendererOptions = {}) {
@@ -184,6 +202,7 @@ export class FfmpegRenderer implements Renderer {
     this.layout = opts.layout ?? cfg.layout;
     this.panels = opts.panels ?? cfg.panels;
     this.outDirOverride = opts.outDir;
+    this.subtitles = opts.subtitles ?? cfg.subtitles;
     // Fail at construction, not mid-render: the factory builds the renderer before any
     // download starts, so a misconfigured layout surfaces in seconds rather than after
     // an hour of transcription.
@@ -211,6 +230,11 @@ export class FfmpegRenderer implements Renderer {
     if (caption.text.trim().length > 0) {
       await writeFile(captionFile, caption.text.trim(), 'utf8');
     }
+    const subtitleFile = join(outDir, `${candidate.id}.subtitles.ass`);
+    const ass = subtitlesForCandidate(candidate, this.subtitles);
+    if (ass) {
+      await writeFile(subtitleFile, ass, 'utf8');
+    }
     const spec = buildFilterSpec(
       caption,
       this.fontFile,
@@ -218,6 +242,7 @@ export class FfmpegRenderer implements Renderer {
       this.layout,
       this.cropX,
       this.panels,
+      ass ? subtitleFile : undefined,
     );
     const args = buildRenderArgs(
       source.localPath,

@@ -100,7 +100,10 @@ export function fillChain(cropX: string): string[] {
  * vstack them, then pad out to a full 1080x1920 so the caption strip exists even when the
  * panels don't reach the bottom.
  */
-export function stackGraph(panels: readonly PanelRect[], drawtext?: string): FilterSpec {
+export function stackGraph(
+  panels: readonly PanelRect[],
+  postFilters: string | readonly string[] = [],
+): FilterSpec {
   if (panels.length < 2) throw new Error('stack layout needs at least two panels');
   const n = panels.length;
   const splitLabels = panels.map((_, i) => `s${i}`);
@@ -117,8 +120,10 @@ export function stackGraph(panels: readonly PanelRect[], drawtext?: string): Fil
   // Panels sit at the top; the remainder is the caption bar.
   steps.push(`[stacked]pad=${OUT_W}:${OUT_H}:0:0:black[padded]`);
 
-  if (drawtext) {
-    steps.push(`[padded]${drawtext}[vout]`);
+  const filters = typeof postFilters === 'string' ? [postFilters] : postFilters;
+  const chain = filters.filter((f) => f.trim().length > 0).join(',');
+  if (chain.length > 0) {
+    steps.push(`[padded]${chain}[vout]`);
     return { kind: 'complex', graph: steps.join(';'), videoLabel: 'vout' };
   }
   return { kind: 'complex', graph: steps.join(';'), videoLabel: 'padded' };

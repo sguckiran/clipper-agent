@@ -14,6 +14,18 @@ const MANAGED_KEYS = [
   'CLIPPER_SPICE_WORDS',
   'CLIPPER_FILLER_WORDS',
   'CLIPPER_DROP_UNPOSTABLE',
+  'CLIPPER_SUBTITLES',
+  'CLIPPER_SUBTITLE_FONT_FAMILY',
+  'CLIPPER_SUBTITLE_FONT_SIZE',
+  'CLIPPER_SUBTITLE_PRIMARY_COLOR',
+  'CLIPPER_SUBTITLE_ACCENT_COLOR',
+  'CLIPPER_SUBTITLE_OUTLINE_COLOR',
+  'CLIPPER_SUBTITLE_SHADOW_COLOR',
+  'CLIPPER_SUBTITLE_OUTLINE_PX',
+  'CLIPPER_SUBTITLE_SHADOW_PX',
+  'CLIPPER_SUBTITLE_MARGIN_V',
+  'CLIPPER_SUBTITLE_MAX_WORDS',
+  'CLIPPER_SUBTITLE_MIN_DURATION_SEC',
   'CLIPPER_MONITOR_CHANNELS',
   'CLIPPER_MONITOR_INTERVAL_SEC',
 ];
@@ -54,6 +66,21 @@ describe('config', () => {
     expect(cfg.scoring.dropUnpostable).toBe(false);
     expect(cfg.clip).toEqual({ minSec: 15, maxSec: 60, targetSec: 30 });
     expect(cfg.render.cropX).toBe('center');
+    expect(cfg.render.subtitles).toMatchObject({
+      enabled: true,
+      fontFamily: 'Arial',
+      fontSizePx: 74,
+      primaryColor: '#FFFFFF',
+      accentColor: '#FFE600',
+      outlineColor: '#080808',
+      shadowColor: '#080808',
+      outlinePx: 7,
+      shadowPx: 2,
+      marginV: 610,
+      maxWordsPerCue: 3,
+      minCueDurationSec: 0.45,
+      uppercase: true,
+    });
   });
 
   it('parses prescreen word overrides and the unpostable flag', () => {
@@ -72,6 +99,23 @@ describe('config', () => {
     const cfg = getConfig();
     expect(cfg.scoring.minScore).toBe(70);
     expect(cfg.scoring.loudnessWeight).toBe(0.7);
+  });
+
+  it('parses subtitle style overrides', () => {
+    process.env.CLIPPER_SUBTITLES = 'false';
+    process.env.CLIPPER_SUBTITLE_FONT_FAMILY = 'Montserrat ExtraBold';
+    process.env.CLIPPER_SUBTITLE_FONT_SIZE = '88';
+    process.env.CLIPPER_SUBTITLE_ACCENT_COLOR = '#FF00FF';
+    process.env.CLIPPER_SUBTITLE_MAX_WORDS = '2';
+    resetConfigCache();
+    const cfg = getConfig();
+    expect(cfg.render.subtitles).toMatchObject({
+      enabled: false,
+      fontFamily: 'Montserrat ExtraBold',
+      fontSizePx: 88,
+      accentColor: '#FF00FF',
+      maxWordsPerCue: 2,
+    });
   });
 
   it('parses monitor channels into a trimmed, non-empty list', () => {

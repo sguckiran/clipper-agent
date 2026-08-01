@@ -114,7 +114,7 @@ OS-appropriate data directory — `doctor` prints the path. Override it with `CL
 
 ## Usage
 
-There are three ways to run it, from manual to fully automated.
+There are four useful CLI flows, from manual clipping to fully automated monitoring and review.
 
 ### 1. One-shot
 
@@ -152,6 +152,20 @@ clipper work      # process the queue (long-running)
 
 `monitor` and `work` are separate long-running processes so you can scale/restart them
 independently.
+
+### 4. Review rendered clips
+
+Generate a contact sheet and JSON QA report for a rendered clip or a directory of clips:
+
+```bash
+clipper qa ./clips
+clipper qa ./clips/some-clip.mp4 --out-dir ./qa --frames 12
+```
+
+The QA command checks mechanical failures: wrong 9:16 size, missing audio, duration outside
+configured bounds, and missing synced-subtitle sidecars. It also writes contact sheets for
+fast visual review. It does not pretend to judge whether a clip is funny; that remains the
+detector/rater's job.
 
 ## Sources
 
@@ -192,6 +206,12 @@ see `.env.example` for the full list. Key options:
 | `CLIPPER_AXIS_{HOOK,FUNNY,POCKET}_WEIGHT`              | `0.4` / `0.35` / `0.25`   | Share of the content score per skill axis                                   |
 | `CLIPPER_AXIS_{HOOK,FUNNY,POCKET}_FLOOR`               | `40` / `35` / `30`        | Below this an axis rejects the clip outright                                |
 | `CLIPPER_HOOK_LEAD_IN_SEC`                             | `1.5`                     | Lead-in kept before the hook line so it has context (`0` = hard cut)        |
+| `CLIPPER_SUBTITLES`                                    | `true`                    | Burn synced word-level subtitles when Whisper provides word timings         |
+| `CLIPPER_SUBTITLE_FONT_FAMILY`                         | `Arial`                   | ASS/libass subtitle font family name                                        |
+| `CLIPPER_SUBTITLE_FONT_SIZE`                           | `74`                      | Subtitle font size in output pixels                                         |
+| `CLIPPER_SUBTITLE_ACCENT_COLOR`                        | `#FFE600`                 | Highlight colour for the emphasized word in each subtitle cue               |
+| `CLIPPER_SUBTITLE_MARGIN_V`                            | `610`                     | Vertical subtitle placement from the bottom of the 1080x1920 frame          |
+| `CLIPPER_SUBTITLE_MAX_WORDS`                           | `3`                       | Max words per synced subtitle cue                                           |
 | `CLIPPER_LAYOUT`                                       | `fill`                    | `fill` (slice 9:16) or `stack` (crop + stack source panels)                 |
 | `CLIPPER_PANELS`                                       | —                         | `stack` panels: `x,y,w,h` rects, semicolon-separated                        |
 | `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |

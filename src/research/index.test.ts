@@ -59,6 +59,40 @@ describe('buildWindows', () => {
     );
     expect(windows.map((w) => [w.startSec, w.endSec])).toEqual([[0, 12]]);
   });
+
+  it('preserves word timings for generated subtitle rendering', () => {
+    const windows = buildWindows(
+      [
+        {
+          start: 0,
+          end: 6,
+          text: 'One two three.',
+          words: [
+            { start: 0.1, end: 0.4, text: 'One' },
+            { start: 0.5, end: 0.8, text: 'two' },
+            { start: 0.9, end: 1.2, text: 'three' },
+          ],
+        },
+        {
+          start: 6,
+          end: 14,
+          text: 'Four five six seven.',
+          words: [
+            { start: 6.1, end: 6.4, text: 'Four' },
+            { start: 6.5, end: 6.8, text: 'five' },
+          ],
+        },
+      ],
+      opts,
+    );
+    expect(windows[0]?.words?.map((w) => w.text)).toEqual([
+      'One',
+      'two',
+      'three',
+      'Four',
+      'five',
+    ]);
+  });
 });
 
 describe('wordCount', () => {
@@ -135,6 +169,22 @@ describe('trimTrailingAfterQuote', () => {
     const out = trimTrailingAfterQuote(window, 'i got arrested that night', segments, 10);
     expect(out.endSec).toBe(10);
     expect(out.text).toBe('I got arrested that night, for real.');
+  });
+
+  it('trims word timings with the punchline cut', () => {
+    const out = trimTrailingAfterQuote(
+      {
+        ...window,
+        words: [
+          { start: 1, end: 2, text: 'arrested' },
+          { start: 12, end: 13, text: 'Anyway' },
+        ],
+      },
+      'i got arrested that night',
+      segments,
+      10,
+    );
+    expect(out.words?.map((w) => w.text)).toEqual(['arrested']);
   });
 
   it('matches across punctuation and casing differences', () => {

@@ -94,6 +94,24 @@ const schema = z.object({
 
   // Render — explicit caption font file (falls back to a per-OS default)
   CLIPPER_CAPTION_FONT: z.string().optional(),
+  // Burn synced word-level subtitles when Whisper provides word timestamps.
+  CLIPPER_SUBTITLES: z
+    .enum(['true', 'false'])
+    .default('true')
+    .transform((v) => v === 'true'),
+  // ASS/libass subtitle style. Font family must be the installed font family name;
+  // CLIPPER_CAPTION_FONT is still passed as a fontsdir hint when set.
+  CLIPPER_SUBTITLE_FONT_FAMILY: z.string().default('Arial'),
+  CLIPPER_SUBTITLE_FONT_SIZE: z.coerce.number().int().positive().default(74),
+  CLIPPER_SUBTITLE_PRIMARY_COLOR: z.string().default('#FFFFFF'),
+  CLIPPER_SUBTITLE_ACCENT_COLOR: z.string().default('#FFE600'),
+  CLIPPER_SUBTITLE_OUTLINE_COLOR: z.string().default('#080808'),
+  CLIPPER_SUBTITLE_SHADOW_COLOR: z.string().default('#080808'),
+  CLIPPER_SUBTITLE_OUTLINE_PX: z.coerce.number().min(0).default(7),
+  CLIPPER_SUBTITLE_SHADOW_PX: z.coerce.number().min(0).default(2),
+  CLIPPER_SUBTITLE_MARGIN_V: z.coerce.number().int().min(0).default(610),
+  CLIPPER_SUBTITLE_MAX_WORDS: z.coerce.number().int().positive().default(3),
+  CLIPPER_SUBTITLE_MIN_DURATION_SEC: z.coerce.number().positive().default(0.45),
   // Horizontal focus of the 9:16 center crop: 'center' | 'left' | 'right' | 0..1.
   // Only used by CLIPPER_LAYOUT=fill.
   CLIPPER_CROP_X: z.string().default('center'),
@@ -181,6 +199,22 @@ export interface Config {
   render: {
     /** Explicit caption font file; undefined → per-OS default. */
     captionFont?: string;
+    /** Synced subtitle burn-in style. */
+    subtitles: {
+      enabled: boolean;
+      fontFamily: string;
+      fontSizePx: number;
+      primaryColor: string;
+      accentColor: string;
+      outlineColor: string;
+      shadowColor: string;
+      outlinePx: number;
+      shadowPx: number;
+      marginV: number;
+      maxWordsPerCue: number;
+      minCueDurationSec: number;
+      uppercase: boolean;
+    };
     /** Horizontal focus of the crop: 'center' | 'left' | 'right' | numeric 0..1. */
     cropX: string;
     /** Reframing layout: whole-frame slice, or stacked source panels. */
@@ -287,6 +321,21 @@ export function getConfig(): Config {
     },
     render: {
       captionFont: env.CLIPPER_CAPTION_FONT,
+      subtitles: {
+        enabled: env.CLIPPER_SUBTITLES,
+        fontFamily: env.CLIPPER_SUBTITLE_FONT_FAMILY,
+        fontSizePx: env.CLIPPER_SUBTITLE_FONT_SIZE,
+        primaryColor: env.CLIPPER_SUBTITLE_PRIMARY_COLOR,
+        accentColor: env.CLIPPER_SUBTITLE_ACCENT_COLOR,
+        outlineColor: env.CLIPPER_SUBTITLE_OUTLINE_COLOR,
+        shadowColor: env.CLIPPER_SUBTITLE_SHADOW_COLOR,
+        outlinePx: env.CLIPPER_SUBTITLE_OUTLINE_PX,
+        shadowPx: env.CLIPPER_SUBTITLE_SHADOW_PX,
+        marginV: env.CLIPPER_SUBTITLE_MARGIN_V,
+        maxWordsPerCue: env.CLIPPER_SUBTITLE_MAX_WORDS,
+        minCueDurationSec: env.CLIPPER_SUBTITLE_MIN_DURATION_SEC,
+        uppercase: true,
+      },
       cropX: env.CLIPPER_CROP_X,
       layout: env.CLIPPER_LAYOUT,
       panels: parsePanels(env.CLIPPER_PANELS),

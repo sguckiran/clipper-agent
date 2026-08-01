@@ -17,6 +17,9 @@ downloads/
 clips/
 work/
 *.log
+.codex-ref-frames/
+.codex-smoke/
+.codex-qa/
 
 # Browser automation / scraper artifacts
 .playwright-mcp/

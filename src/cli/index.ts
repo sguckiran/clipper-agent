@@ -24,6 +24,7 @@ import { FileJobQueue } from '../core/queue.js';
 import { ChannelMonitor, YtDlpChannelLister, defaultSeenStore } from '../monitor/index.js';
 import { createDefaultPipeline } from '../pipeline/factory.js';
 import { FilesystemPromptStore } from '../prompts/index.js';
+import { qaTarget } from '../review/index.js';
 import { enqueueClipJob, Worker } from '../worker/index.js';
 
 const log = createLogger('cli');
@@ -88,6 +89,13 @@ function detectOptionsFromArgs(args: string[]): DetectOptions {
   if (limit !== undefined) opts.limit = limit;
   if (minScore !== undefined) opts.minScore = minScore;
   return opts;
+}
+
+/** Read a string CLI flag, e.g. --out-dir ./qa. */
+function flagString(args: string[], name: string): string | undefined {
+  const i = args.indexOf(name);
+  if (i === -1) return undefined;
+  return args[i + 1];
 }
 
 /** First argument that isn't a flag or a flag's value. */
@@ -180,6 +188,43 @@ async function queue(args: string[]): Promise<number> {
   return 0;
 }
 
+async function qa(args: string[]): Promise<number> {
+  const target = firstPositional(args);
+  if (!target) {
+    log.error('usage: clipper qa <clip-file|clips-dir> [--out-dir DIR] [--frames N]');
+    return 1;
+  }
+  const reports = await qaTarget(resolve(target), {
+    outDir: flagString(args, '--out-dir'),
+    frames: flagNumber(args, '--frames'),
+    minSec: flagNumber(args, '--min-sec'),
+    maxSec: flagNumber(args, '--max-sec'),
+  });
+  if (reports.length === 0) {
+    log.warn({ target }, 'no video files found to review');
+    return 1;
+  }
+  let failures = 0;
+  for (const report of reports) {
+    if (!report.passed) failures++;
+    log.info(
+      {
+        path: report.clip.path,
+        passed: report.passed,
+        durationSec: Number(report.clip.durationSec.toFixed(1)),
+        size: `${report.clip.width}x${report.clip.height}`,
+        audio: report.clip.hasAudio,
+        contactSheet: report.contactSheetPath,
+        report: report.reportPath,
+        issues: report.issues.map((i) => `${i.severity}:${i.code}`),
+      },
+      'qa',
+    );
+  }
+  log.info({ clips: reports.length, failures }, 'qa complete');
+  return failures > 0 ? 1 : 0;
+}
+
 async function prompts(args: string[]): Promise<number> {
   const store = new FilesystemPromptStore();
   const sub = args[0];
@@ -213,6 +258,7 @@ function printHelp(): void {
       '  work          Run the queue worker',
       '  monitor       Poll configured channels and auto-enqueue new VODs',
       '  queue [status] List queued jobs (pending|running|done|failed)',
+      '  qa <file|dir> Review rendered clips: metadata checks + contact sheets',
       '  prompts       List prompts (or: prompts show <name> [version])',
       '  doctor        Check environment (binaries, config, paths)',
       '  help          Show this help',
@@ -242,6 +288,9 @@ async function main(): Promise<void> {
       break;
     case 'queue':
       process.exitCode = await queue(rest);
+      break;
+    case 'qa':
+      process.exitCode = await qa(rest);
       break;
     case 'prompts':
       process.exitCode = await prompts(rest);
