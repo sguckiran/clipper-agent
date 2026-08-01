@@ -1,6 +1,6 @@
 /**
  * Render module: cuts a candidate window, reframes it to vertical 9:16 and burns
- * the caption with ffmpeg. Implements the {@link Renderer} contract. The encoder is
+ * synced subtitles with ffmpeg. Implements the {@link Renderer} contract. The encoder is
  * chosen per-platform (VideoToolbox on Apple Silicon, libx264 elsewhere) and the
  * subprocess runner is injected so tests assert the ffmpeg command without rendering.
  */
@@ -92,43 +92,22 @@ export function stackCaptionY(stackedH: number, stripH: number): string {
 }
 
 /**
- * Build the filtergraph for a clip: reframe per the chosen layout, then burn the caption.
+ * Build the filtergraph for a clip: reframe per the chosen layout, then burn synced subtitles.
  */
 export function buildFilterSpec(
-  caption: Caption,
+  _caption: Caption,
   fontFile: string,
-  textFile: string,
+  _textFile: string,
   layout: LayoutMode,
   cropX: string,
   panels: readonly PanelRect[],
   subtitleFile?: string,
 ): FilterSpec {
-  const titleCaption =
-    subtitleFile && layout !== 'stack' && caption.style?.position === undefined
-      ? {
-          ...caption,
-          style: {
-            ...caption.style,
-            position: 'top' as const,
-            fontSizePx: caption.style?.fontSizePx ?? 54,
-          },
-        }
-      : caption;
   const postFilters: string[] = [];
-  const draw = drawtextFilter(titleCaption, fontFile, textFile);
-  if (draw) postFilters.push(draw);
   if (subtitleFile) postFilters.push(subtitlesFilter(subtitleFile, fontFile));
 
   if (layout === 'stack') {
-    const { stackedH, stripH } = stackMetrics(panels);
-    return stackGraph(
-      panels,
-      postFilters.map((filter) =>
-        filter.startsWith('drawtext=')
-          ? drawtextFilter(titleCaption, fontFile, textFile, stackCaptionY(stackedH, stripH))!
-          : filter,
-      ),
-    );
+    return stackGraph(panels, postFilters);
   }
   if (layout === 'fit') {
     return fitGraph(postFilters);
@@ -239,12 +218,6 @@ export class FfmpegRenderer implements Renderer {
   async render(source: SourceVideo, candidate: ClipCandidate, caption: Caption): Promise<Clip> {
     const outDir = this.outDirOverride ?? (await ensureDataDirs()).clips;
     const output = join(outDir, `${candidate.id}.mp4`);
-    // Write the caption to a sidecar file so drawtext reads it via textfile= and the
-    // filtergraph never has to parse arbitrary caption text.
-    const captionFile = join(outDir, `${candidate.id}.caption.txt`);
-    if (caption.text.trim().length > 0) {
-      await writeFile(captionFile, caption.text.trim(), 'utf8');
-    }
     const subtitleFile = join(outDir, `${candidate.id}.subtitles.ass`);
     const ass = subtitlesForCandidate(candidate, this.subtitles);
     if (ass) {
@@ -253,7 +226,7 @@ export class FfmpegRenderer implements Renderer {
     const spec = buildFilterSpec(
       caption,
       this.fontFile,
-      captionFile,
+      '',
       this.layout,
       this.cropX,
       this.panels,

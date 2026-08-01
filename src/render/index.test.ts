@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -181,15 +181,15 @@ describe('drawtextFilter', () => {
 });
 
 describe('buildFilterSpec', () => {
-  it('fill layout scales the whole frame then slices 9:16', () => {
+  it('fill layout scales the whole frame then slices 9:16 without a static title', () => {
     const spec = buildFilterSpec({ text: 'WOW' }, FONT, TEXT, 'fill', 'center', []);
     expect(spec.kind).toBe('vf');
     expect(vf(spec)).toContain('scale=1080:1920:force_original_aspect_ratio=increase');
     expect(vf(spec)).toContain('crop=1080:1920');
-    expect(vf(spec)).toContain('drawtext');
+    expect(vf(spec)).not.toContain('drawtext');
   });
 
-  it('moves the static hook to the top when synced subtitles are burned in fill layout', () => {
+  it('burns synced subtitles without drawing a static title in fill layout', () => {
     const spec = buildFilterSpec(
       { text: 'WOW' },
       FONT,
@@ -200,11 +200,10 @@ describe('buildFilterSpec', () => {
       '/tmp/subtitles.ass',
     );
     expect(vf(spec)).toContain('subtitles=filename=');
-    expect(vf(spec)).toContain('fontsize=54');
-    expect(vf(spec)).toContain('y=text_h');
+    expect(vf(spec)).not.toContain('drawtext');
   });
 
-  it('moves the static hook to the top when synced subtitles are burned in fit layout', () => {
+  it('burns synced subtitles without drawing a static title in fit layout', () => {
     const spec = buildFilterSpec(
       { text: 'WOW' },
       FONT,
@@ -215,8 +214,7 @@ describe('buildFilterSpec', () => {
       '/tmp/subtitles.ass',
     );
     expect(vf(spec)).toContain('subtitles=filename=');
-    expect(vf(spec)).toContain('fontsize=54');
-    expect(vf(spec)).toContain('y=text_h');
+    expect(vf(spec)).not.toContain('drawtext');
   });
 
   it('fit layout preserves the full frame over a blurred background', () => {
@@ -224,15 +222,15 @@ describe('buildFilterSpec', () => {
     expect(spec.kind).toBe('complex');
     expect(vf(spec)).toContain('boxblur=20:1');
     expect(vf(spec)).toContain('overlay=(W-w)/2:(H-h)/2');
-    expect(vf(spec)).toContain('drawtext');
+    expect(vf(spec)).not.toContain('drawtext');
   });
 
-  it('stack layout crops panels and puts the caption in the strip', () => {
+  it('stack layout crops panels without drawing a static title', () => {
     const spec = buildFilterSpec({ text: 'WOW' }, FONT, TEXT, 'stack', 'center', PANELS);
     expect(spec.kind).toBe('complex');
     expect(vf(spec)).toContain('crop=600:448:34:74');
     expect(vf(spec)).toContain('vstack=inputs=2');
-    expect(vf(spec)).toContain('y=1612+(308-text_h)/2');
+    expect(vf(spec)).not.toContain('drawtext');
     // never falls back to slicing the middle of the frame, which is the divider
     expect(vf(spec)).not.toContain('force_original_aspect_ratio=increase');
   });
@@ -308,7 +306,7 @@ describe('FfmpegRenderer', () => {
     run: vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 }),
   });
 
-  it('writes the caption sidecar, renders a clip and returns metadata', async () => {
+  it('renders a clip and returns metadata without burning the static title', async () => {
     const outDir = await mkdtemp(join(tmpdir(), 'clipper-clips-'));
     const runner = fakeRunner();
     const renderer = new FfmpegRenderer({
@@ -318,7 +316,6 @@ describe('FfmpegRenderer', () => {
       fontFile: FONT,
       outDir,
     });
-    // caption with a comma + apostrophe would break inline drawtext parsing
     const clip = await renderer.render(source, candidate, { text: "Wow, it's wild" });
 
     expect(runner.run).toHaveBeenCalledOnce();
@@ -327,8 +324,7 @@ describe('FfmpegRenderer', () => {
     expect(args).toContain('/dl/src.mp4');
     expect(args[args.length - 1]).toBe(join(outDir, 'src-30.0.mp4'));
 
-    // the caption is written verbatim to the sidecar file
-    expect(await readFile(join(outDir, 'src-30.0.caption.txt'), 'utf8')).toBe("Wow, it's wild");
+    expect((args as string[]).join(' ')).not.toContain('drawtext');
 
     expect(clip).toMatchObject({
       id: 'clip-src-30.0',
@@ -357,7 +353,7 @@ describe('FfmpegRenderer', () => {
     const line = (args as string[]).join(' ');
     expect(line).toContain('-filter_complex');
     expect(line).toContain('vstack=inputs=2');
-    expect(line).toContain('-map [vout] -map 0:a?');
+    expect(line).toContain('-map [padded] -map 0:a?');
     expect(line).not.toContain('-vf ');
   });
 
