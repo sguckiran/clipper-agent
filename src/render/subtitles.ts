@@ -65,6 +65,23 @@ function roundCueTime(sec: number): number {
   return Math.round(sec * 100) / 100;
 }
 
+function withoutOverlaps(cues: readonly SubtitleCue[]): SubtitleCue[] {
+  const out: SubtitleCue[] = [];
+  for (const cue of cues) {
+    const next: SubtitleCue = { ...cue };
+    const prev = out[out.length - 1];
+    if (prev && next.startSec < prev.endSec) {
+      prev.endSec = roundCueTime(Math.max(prev.startSec + 0.05, next.startSec));
+      if (prev.endSec > next.startSec) next.startSec = prev.endSec;
+    }
+    if (next.endSec <= next.startSec) {
+      next.endSec = roundCueTime(next.startSec + 0.05);
+    }
+    out.push(next);
+  }
+  return out.filter((cue) => cue.endSec > cue.startSec);
+}
+
 /** Build short 1-3 word subtitle cues from timed words. */
 export function buildSubtitleCues(
   words: readonly TranscriptWord[],
@@ -112,7 +129,7 @@ export function buildSubtitleCues(
       highlightIndex: chooseHighlight(wordsForCue),
     });
   }
-  return cues;
+  return withoutOverlaps(cues);
 }
 
 function chooseHighlight(words: readonly string[]): number {

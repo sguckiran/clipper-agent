@@ -37,6 +37,21 @@ describe('buildSubtitleCues', () => {
     );
     expect(cues[0]?.endSec).toBeCloseTo(DEFAULT_SUBTITLE_STYLE.minCueDurationSec);
   });
+
+  it('normalizes overlapping word timings into non-overlapping subtitle cues', () => {
+    const cues = buildSubtitleCues(
+      [
+        { start: 10.9, end: 11.75, text: 'have' },
+        { start: 11.0, end: 11.75, text: 'four' },
+        { start: 11.4, end: 11.9, text: 'forgot' },
+      ],
+      10,
+      15,
+      { ...DEFAULT_SUBTITLE_STYLE, maxWordsPerCue: 2 },
+    );
+    expect(cues).toHaveLength(2);
+    expect(cues[0]!.endSec).toBeLessThanOrEqual(cues[1]!.startSec);
+  });
 });
 
 describe('renderAssSubtitles', () => {
