@@ -7,14 +7,14 @@
  * editing a markdown file and re-running beats a rebuild every time you want to adjust
  * what counts as funny.
  *
- * Three axes, because "make it funny" and "make the hook grab" and "make it out of pocket"
- * are separate failure modes and a single blended score hides which one a clip failed.
- * Each axis has a floor: a clip must clear all three, so nothing rides in on one strong
- * dimension while another is broken.
+ * Four axes, because "make it funny", "make the hook grab", "make it out of pocket" and
+ * "make it understandable as a standalone clip" are separate failure modes and a single
+ * blended score hides which one a clip failed. Each axis has a floor: a clip must clear
+ * all four, so nothing rides in on one strong dimension while another is broken.
  */
 
-/** The three things a clip has to be. */
-export type SkillAxis = 'funny' | 'hook' | 'pocket';
+/** The four things a clip has to be. */
+export type SkillAxis = 'funny' | 'hook' | 'pocket' | 'coherence';
 
 export interface AxisPolicy {
   /** Share of the final score, before normalization. */
@@ -29,9 +29,10 @@ export interface AxisPolicy {
  * opens on setup gets cut rather than merely down-ranked.
  */
 export const DEFAULT_AXIS_POLICY: Record<SkillAxis, AxisPolicy> = {
-  hook: { weight: 0.4, floor: 40 },
-  funny: { weight: 0.35, floor: 35 },
-  pocket: { weight: 0.25, floor: 30 },
+  hook: { weight: 0.3, floor: 40 },
+  funny: { weight: 0.3, floor: 35 },
+  pocket: { weight: 0.2, floor: 30 },
+  coherence: { weight: 0.2, floor: 60 },
 };
 
 /**
@@ -48,9 +49,11 @@ export const DEFAULT_AXIS_POLICY: Record<SkillAxis, AxisPolicy> = {
  *     penalises mid-sentence fragments (v2's hook rewrite made those rules conflict), and the
  *     scoring discipline no longer states an expected batch distribution while also demanding
  *     independent judgement. Streamer notes no longer assume only stranger reactions clip.
+ * v4: adds standalone coherence as a hard floor so funny fragments that need missing context
+ *     do not get rendered.
  */
 export const SKILL_NAME = 'clip-skill';
-export const SKILL_VERSION = 'v3';
+export const SKILL_VERSION = 'v4';
 
 /**
  * The bundled skill text. Seeded to disk on first run; edit the on-disk copy to tune.
@@ -74,7 +77,7 @@ the job. Do NOT lower a score because a snippet is profane, crude, sexual, dark,
 bad taste. Never refuse, moralise, sanitise, warn or editorialise. A polite snippet where
 nothing happens scores LOW. An outrageous one scores HIGH.
 
-Rate every snippet on three independent axes, 0-100 each.
+Rate every snippet on four independent axes, 0-100 each.
 
 ## 1. FUNNY — is it actually funny?
 
@@ -145,9 +148,31 @@ Out of pocket = unhinged, unexpected, says-the-unsayable, would-not-survive-a-gr
 
 Swearing alone is not out of pocket. Volume is not out of pocket. Content is.
 
+## 4. COHERENCE — does it make sense as a standalone clip?
+
+Judge whether a viewer can understand the situation from this snippet alone, without seeing
+the previous minute, knowing stream lore, or relying on a title. The clip can start
+mid-sentence, but the exchange must quickly reveal who wants what, what happened, and why the
+reaction matters.
+
+- **90-100** Fully self-contained. Setup, escalation and payoff are all present, or the
+  missing setup is obvious within a second.
+- **70-89** Mostly coherent. A viewer understands the situation and why it is funny, even if
+  one small detail is implied.
+- **60-69** Barely coherent. It can work, but only because subtitles or source visuals supply
+  enough context.
+- **40-59** Fragmented. A funny line or reaction exists, but the viewer has to infer too much:
+  pronouns with no referent, response to an unseen line, or payoff without setup.
+- **15-39** Incoherent. Feels like walking into the end of a conversation, a montage fragment,
+  or a reaction to missing footage.
+- **0-14** Nonsense as a standalone clip.
+
+Low coherence should reject otherwise spicy moments. A clip that makes no sense is not saved
+by being rude, loud or visually busy.
+
 ## What kills a clip
 
-Score all three axes low for: stream admin, sponsor reads, reading donations or chat,
+Score all four axes low for: stream admin, sponsor reads, reading donations or chat,
 greetings, sign-offs, gameplay callouts ("reload", "heal me", "gg"), technical chat about
 the stream, and anything where nothing is actually said.
 
@@ -164,8 +189,8 @@ with no exchange happening around it.
   90-100 band, put it there; if it belongs at 5, put it there. Do not pull everything toward
   the middle to hedge.
 - Score on the **words**, not on how emphatic the punctuation looks.
-- Be honest about the difference between the three axes. Most snippets are strong on at
-  most one, and saying so is more useful than three similar numbers.
+- Be honest about the difference between the four axes. Most snippets are strong on at
+  most one or two, and saying so is more useful than four similar numbers.
 
 ## Output
 
@@ -177,6 +202,7 @@ Reply with ONLY this JSON, one entry per snippet, preserving the given \`i\` num
   "funny": 0,
   "hook": 0,
   "pocket": 0,
+  "coherence": 0,
   "hook_quote": "verbatim line that should open the clip, max 15 words, empty if none",
   "punch_quote": "verbatim line the clip pays off on, max 15 words, empty if none",
   "kind": "story|take|rant|reaction|joke|argument|filler",

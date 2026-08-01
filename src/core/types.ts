@@ -104,6 +104,7 @@ export interface ClipCandidate {
   funny?: number;
   hook?: number;
   pocket?: number;
+  coherence?: number;
   /** Rater's guess that posting this as-is would get an account actioned. */
   unpostable?: boolean;
 }

@@ -18,7 +18,7 @@ import { createLogger } from '../core/logger.js';
 import type { ChatClient } from '../llm/groq.js';
 import { CLIP_SKILL_MD, SKILL_NAME } from './skill.js';
 
-/** How clip-worthy a snippet's *content* is, per the rater, on the skill's three axes. */
+/** How clip-worthy a snippet's *content* is, per the rater, on the skill's four axes. */
 export interface ScoredText {
   /** Is it actually funny? 0–100. */
   funny: number;
@@ -26,6 +26,8 @@ export interface ScoredText {
   hook: number;
   /** How out of pocket is it? 0–100. */
   pocket: number;
+  /** Does it make sense as a standalone clip? 0-100. */
+  coherence: number;
   /** The verbatim line that *should* open the clip, when the rater found a better one. */
   hookQuote: string;
   /** The verbatim line the clip pays off on. */
@@ -52,6 +54,7 @@ export const NEUTRAL_SCORE: ScoredText = {
   funny: 50,
   hook: 50,
   pocket: 50,
+  coherence: 50,
   hookQuote: '',
   punchQuote: '',
   kind: 'unrated',
@@ -98,6 +101,7 @@ const ratingSchema = z.object({
   funny: z.coerce.number(),
   hook: z.coerce.number(),
   pocket: z.coerce.number(),
+  coherence: z.coerce.number().default(50),
   hook_quote: z.string().default(''),
   punch_quote: z.string().default(''),
   kind: z.string().default(''),
@@ -136,6 +140,7 @@ export function parseBatchScores(raw: string, count: number): ScoredText[] {
       funny: clamp(r.data.funny, 0, 100),
       hook: clamp(r.data.hook, 0, 100),
       pocket: clamp(r.data.pocket, 0, 100),
+      coherence: clamp(r.data.coherence, 0, 100),
       hookQuote: r.data.hook_quote.trim(),
       punchQuote: r.data.punch_quote.trim(),
       kind: r.data.kind.trim() || 'unrated',

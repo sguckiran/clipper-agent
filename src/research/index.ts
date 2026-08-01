@@ -54,6 +54,7 @@ export interface WindowOptions {
 }
 
 const SENTENCE_END = /[.!?…]['")\]]*$/;
+const SKILL_AXES = ['hook', 'funny', 'pocket', 'coherence'] as const;
 
 /** True if the text looks like the end of a sentence. */
 export function endsSentence(text: string): boolean {
@@ -168,27 +169,26 @@ export function failedAxis(
   rating: Pick<ScoredText, SkillAxis>,
   policy: Record<SkillAxis, AxisPolicy>,
 ): SkillAxis | undefined {
-  for (const axis of ['hook', 'funny', 'pocket'] as const) {
+  for (const axis of SKILL_AXES) {
     if (rating[axis] < policy[axis].floor) return axis;
   }
   return undefined;
 }
 
 /**
- * Blend the skill's three axes into one 0–100 content score.
+ * Blend the skill's axes into one 0–100 content score.
  *
  * Floors are enforced separately by {@link failedAxis} rather than folded in here: a
  * weighted average lets one strong axis carry a clip that is broken on another, which is
- * exactly what "it has to be funny AND hook AND be out of pocket" rules out.
+ * exactly what "it has to be funny AND hook AND be out of pocket AND coherent" rules out.
  */
 export function axisScore(
   rating: Pick<ScoredText, SkillAxis>,
   policy: Record<SkillAxis, AxisPolicy>,
 ): number {
-  const axes = ['hook', 'funny', 'pocket'] as const;
-  const total = axes.reduce((acc, a) => acc + policy[a].weight, 0);
+  const total = SKILL_AXES.reduce((acc, a) => acc + policy[a].weight, 0);
   if (total <= 0) return 0;
-  return axes.reduce((acc, a) => acc + rating[a] * policy[a].weight, 0) / total;
+  return SKILL_AXES.reduce((acc, a) => acc + rating[a] * policy[a].weight, 0) / total;
 }
 
 /**
@@ -536,12 +536,12 @@ export class ScoringClipDetector implements ClipDetector {
     const meanRms = createLoudnessLookup(loudness);
 
     const candidates: ClipCandidate[] = [];
-    const floorFails: Record<string, number> = { hook: 0, funny: 0, pocket: 0 };
+    const floorFails: Record<string, number> = { hook: 0, funny: 0, pocket: 0, coherence: 0 };
     let risky = 0;
     for (const [i, w] of selected.entries()) {
       const rating: ScoredText = ratings[i] ?? { ...NEUTRAL_SCORE };
 
-      // Floors first: a clip must clear all three axes, so nothing rides in on one strong
+      // Floors first: a clip must clear every axis, so nothing rides in on one strong
       // dimension while another is broken.
       const failed = failedAxis(rating, this.axisPolicy);
       if (failed) {
@@ -588,6 +588,7 @@ export class ScoringClipDetector implements ClipDetector {
         funny: rating.funny,
         hook: rating.hook,
         pocket: rating.pocket,
+        coherence: rating.coherence,
         unpostable: rating.risky,
       });
     }
@@ -616,6 +617,7 @@ export class ScoringClipDetector implements ClipDetector {
           funny: c.funny,
           hook: c.hook,
           pocket: c.pocket,
+          coherence: c.coherence,
           kind: c.kind,
           risky: c.unpostable,
           hookQuote: c.hookQuote,

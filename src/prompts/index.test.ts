@@ -2,6 +2,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { SKILL_VERSION } from '../research/skill.js';
 import { extractVariables, FilesystemPromptStore, interpolate } from './index.js';
 
 describe('extractVariables', () => {
@@ -21,6 +22,8 @@ describe('interpolate', () => {
 
 describe('FilesystemPromptStore', () => {
   const dirs: string[] = [];
+  const skillFile = `clip-skill.${SKILL_VERSION}.md`;
+
   async function tempStore(seedDefaults = true) {
     const dir = await mkdtemp(join(tmpdir(), 'clipper-prompts-'));
     dirs.push(dir);
@@ -46,18 +49,18 @@ describe('FilesystemPromptStore', () => {
     // Seeding is lazy, so touch the store before inspecting the directory.
     expect((await store.get('clip-skill')).template).toMatch(/## 2\. HOOK/);
     // The skill is markdown on disk so the rating criteria can be retuned without a rebuild.
-    expect(await readFile(join(dir, 'clip-skill.v3.md'), 'utf8')).toMatch(/^# Clip skill/);
+    expect(await readFile(join(dir, skillFile), 'utf8')).toMatch(/^# Clip skill/);
   });
 
   it('reads an edited skill back from disk', async () => {
     const { dir, store } = await tempStore();
-    await writeFile(join(dir, 'clip-skill.v3.md'), '# my own rules', 'utf8');
+    await writeFile(join(dir, skillFile), '# my own rules', 'utf8');
     expect((await store.get('clip-skill')).template).toBe('# my own rules');
   });
 
   it('does not overwrite a skill that already exists on disk', async () => {
     const { dir } = await tempStore();
-    await writeFile(join(dir, 'clip-skill.v3.md'), '# tuned by hand', 'utf8');
+    await writeFile(join(dir, skillFile), '# tuned by hand', 'utf8');
     // A second store over the same dir must not clobber the user's tuning.
     const second = new FilesystemPromptStore({ dir });
     expect((await second.get('clip-skill')).template).toBe('# tuned by hand');
@@ -67,7 +70,7 @@ describe('FilesystemPromptStore', () => {
     const { dir, store } = await tempStore();
     await writeFile(join(dir, 'clip-skill.v10.md'), '# v10', 'utf8');
     expect((await store.get('clip-skill')).version).toBe('v10');
-    expect((await store.get('clip-skill', 'v3')).template).toMatch(/^# Clip skill/);
+    expect((await store.get('clip-skill', SKILL_VERSION)).template).toMatch(/^# Clip skill/);
   });
 
   it('renders a seeded prompt with variables', async () => {

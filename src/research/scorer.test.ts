@@ -18,6 +18,7 @@ const row = (i: number, over: Record<string, unknown> = {}): Record<string, unkn
   funny: 50,
   hook: 50,
   pocket: 50,
+  coherence: 50,
   ...over,
 });
 
@@ -42,13 +43,14 @@ describe('parseBatchScores', () => {
     expect(out[1]?.punchQuote).toBe('a long quote here');
   });
 
-  it('reads all three axes plus both quotes', () => {
+  it('reads all four axes plus both quotes', () => {
     const out = parseBatchScores(
       reply([
         row(1, {
           funny: 80,
           hook: 70,
           pocket: 60,
+          coherence: 85,
           hook_quote: '  WAIT you did what  ',
           punch_quote: '  and then he got arrested  ',
           risky: true,
@@ -60,6 +62,7 @@ describe('parseBatchScores', () => {
       funny: 80,
       hook: 70,
       pocket: 60,
+      coherence: 85,
       hookQuote: 'WAIT you did what',
       punchQuote: 'and then he got arrested',
       kind: 'unrated',
@@ -81,15 +84,18 @@ describe('parseBatchScores', () => {
     expect(out).toEqual([NEUTRAL_SCORE, NEUTRAL_SCORE]);
   });
 
-  it('drops a row missing an axis rather than guessing at it', () => {
-    // funny/hook/pocket are all required: a partial row would silently score as if the
+  it('drops a row missing a required axis rather than guessing at it', () => {
+    // funny/hook/pocket are required: a partial row would silently score as if the
     // missing axis were fine, which is exactly what the floors exist to prevent.
     expect(parseBatchScores(reply([{ i: 1, funny: 90, hook: 90 }]), 1)).toEqual([NEUTRAL_SCORE]);
   });
 
   it('clamps every axis to 0-100', () => {
-    const out = parseBatchScores(reply([row(1, { funny: 400, hook: -20, pocket: 101 })]), 1);
-    expect(out[0]).toMatchObject({ funny: 100, hook: 0, pocket: 100 });
+    const out = parseBatchScores(
+      reply([row(1, { funny: 400, hook: -20, pocket: 101, coherence: 120 })]),
+      1,
+    );
+    expect(out[0]).toMatchObject({ funny: 100, hook: 0, pocket: 100, coherence: 100 });
   });
 
   it('accepts any array-valued key and a bare array', () => {
@@ -123,20 +129,31 @@ describe('CLIP_SKILL_MD', () => {
     expect(CLIP_SKILL_MD).toMatch(/Never refuse, moralise/i);
   });
 
-  it('defines all three axes', () => {
+  it('defines all four axes', () => {
     expect(CLIP_SKILL_MD).toMatch(/## 1\. FUNNY/);
     expect(CLIP_SKILL_MD).toMatch(/## 2\. HOOK/);
     expect(CLIP_SKILL_MD).toMatch(/## 3\. POCKET/);
+    expect(CLIP_SKILL_MD).toMatch(/## 4\. COHERENCE/);
   });
 
   it('anchors the full range on each axis', () => {
     for (const band of ['90-100', '70-89', '40-69', '15-39', '0-14']) {
       expect(CLIP_SKILL_MD.split(band).length - 1).toBeGreaterThanOrEqual(3);
     }
+    expect(CLIP_SKILL_MD).toContain('60-69');
+    expect(CLIP_SKILL_MD).toContain('40-59');
   });
 
   it('asks for the fields the parser reads', () => {
-    for (const field of ['funny', 'hook', 'pocket', 'hook_quote', 'punch_quote', 'risky']) {
+    for (const field of [
+      'funny',
+      'hook',
+      'pocket',
+      'coherence',
+      'hook_quote',
+      'punch_quote',
+      'risky',
+    ]) {
       expect(CLIP_SKILL_MD).toContain(`"${field}"`);
     }
   });

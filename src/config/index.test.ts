@@ -14,6 +14,14 @@ const MANAGED_KEYS = [
   'CLIPPER_SPICE_WORDS',
   'CLIPPER_FILLER_WORDS',
   'CLIPPER_DROP_UNPOSTABLE',
+  'CLIPPER_AXIS_HOOK_WEIGHT',
+  'CLIPPER_AXIS_FUNNY_WEIGHT',
+  'CLIPPER_AXIS_POCKET_WEIGHT',
+  'CLIPPER_AXIS_COHERENCE_WEIGHT',
+  'CLIPPER_AXIS_HOOK_FLOOR',
+  'CLIPPER_AXIS_FUNNY_FLOOR',
+  'CLIPPER_AXIS_POCKET_FLOOR',
+  'CLIPPER_AXIS_COHERENCE_FLOOR',
   'CLIPPER_SUBTITLES',
   'CLIPPER_SUBTITLE_FONT_FAMILY',
   'CLIPPER_SUBTITLE_FONT_SIZE',
@@ -65,6 +73,12 @@ describe('config', () => {
     expect(cfg.scoring.spiceWords).toEqual([]);
     expect(cfg.scoring.fillerWords).toEqual([]);
     expect(cfg.scoring.dropUnpostable).toBe(false);
+    expect(cfg.scoring.axisPolicy).toMatchObject({
+      hook: { weight: 0.3, floor: 40 },
+      funny: { weight: 0.3, floor: 35 },
+      pocket: { weight: 0.2, floor: 30 },
+      coherence: { weight: 0.2, floor: 60 },
+    });
     expect(cfg.clip).toEqual({ minSec: 15, maxSec: 60, targetSec: 30 });
     expect(cfg.render.cropX).toBe('center');
     expect(cfg.render.subtitles).toMatchObject({

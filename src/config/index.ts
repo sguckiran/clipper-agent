@@ -66,12 +66,14 @@ const schema = z.object({
   // axis has both a weight (share of the content score) and a FLOOR — below the floor the
   // clip is rejected outright, so nothing rides in on one strong axis while another is
   // broken. Tune the criteria themselves in <dataDir>/prompts/clip-skill.v1.md.
-  CLIPPER_AXIS_HOOK_WEIGHT: z.coerce.number().min(0).default(0.4),
-  CLIPPER_AXIS_FUNNY_WEIGHT: z.coerce.number().min(0).default(0.35),
-  CLIPPER_AXIS_POCKET_WEIGHT: z.coerce.number().min(0).default(0.25),
+  CLIPPER_AXIS_HOOK_WEIGHT: z.coerce.number().min(0).default(0.3),
+  CLIPPER_AXIS_FUNNY_WEIGHT: z.coerce.number().min(0).default(0.3),
+  CLIPPER_AXIS_POCKET_WEIGHT: z.coerce.number().min(0).default(0.2),
+  CLIPPER_AXIS_COHERENCE_WEIGHT: z.coerce.number().min(0).default(0.2),
   CLIPPER_AXIS_HOOK_FLOOR: z.coerce.number().min(0).max(100).default(40),
   CLIPPER_AXIS_FUNNY_FLOOR: z.coerce.number().min(0).max(100).default(35),
   CLIPPER_AXIS_POCKET_FLOOR: z.coerce.number().min(0).max(100).default(30),
+  CLIPPER_AXIS_COHERENCE_FLOOR: z.coerce.number().min(0).max(100).default(60),
   // Seconds of the preceding line kept in front of the hook. Defaults to 0 — a hard cut
   // straight onto the hook. Reference clips that perform well cold-open mid-sentence and let
   // the title card supply the premise, so lead-in mostly buys slower openings. Raise it if
@@ -183,7 +185,7 @@ export interface Config {
     fillerWords: string[];
     /** Drop candidates the rater flags as unpostable. */
     dropUnpostable: boolean;
-    /** Per-axis weight + floor for the clip skill's three axes. */
+    /** Per-axis weight + floor for the clip skill's four axes. */
     axisPolicy: Record<SkillAxis, AxisPolicy>;
     /** Seconds of lead-in kept before the hook line. */
     hookLeadInSec: number;
@@ -309,6 +311,10 @@ export function getConfig(): Config {
         hook: { weight: env.CLIPPER_AXIS_HOOK_WEIGHT, floor: env.CLIPPER_AXIS_HOOK_FLOOR },
         funny: { weight: env.CLIPPER_AXIS_FUNNY_WEIGHT, floor: env.CLIPPER_AXIS_FUNNY_FLOOR },
         pocket: { weight: env.CLIPPER_AXIS_POCKET_WEIGHT, floor: env.CLIPPER_AXIS_POCKET_FLOOR },
+        coherence: {
+          weight: env.CLIPPER_AXIS_COHERENCE_WEIGHT,
+          floor: env.CLIPPER_AXIS_COHERENCE_FLOOR,
+        },
       },
       hookLeadInSec: env.CLIPPER_HOOK_LEAD_IN_SEC,
       maxUnratedFraction: env.CLIPPER_MAX_UNRATED_FRACTION,

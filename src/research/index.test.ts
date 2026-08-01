@@ -228,7 +228,12 @@ describe('formatTimecode', () => {
 });
 
 describe('failedAxis / axisScore', () => {
-  const rating = (funny: number, hook: number, pocket: number) => ({ funny, hook, pocket });
+  const rating = (funny: number, hook: number, pocket: number, coherence = 80) => ({
+    funny,
+    hook,
+    pocket,
+    coherence,
+  });
 
   it('clears all floors for a strong clip', () => {
     expect(failedAxis(rating(80, 75, 70), DEFAULT_AXIS_POLICY)).toBeUndefined();
@@ -241,27 +246,33 @@ describe('failedAxis / axisScore', () => {
     expect(failedAxis(rating(30, 90, 85), DEFAULT_AXIS_POLICY)).toBe('funny');
     // funny and well-opened, but completely tame
     expect(failedAxis(rating(80, 80, 10), DEFAULT_AXIS_POLICY)).toBe('pocket');
+    // funny and spicy, but not understandable without missing context
+    expect(failedAxis(rating(90, 90, 90, 30), DEFAULT_AXIS_POLICY)).toBe('coherence');
   });
 
   it('treats the floor as inclusive', () => {
     const p = DEFAULT_AXIS_POLICY;
-    expect(failedAxis(rating(p.funny.floor, p.hook.floor, p.pocket.floor), p)).toBeUndefined();
+    expect(
+      failedAxis(rating(p.funny.floor, p.hook.floor, p.pocket.floor, p.coherence.floor), p),
+    ).toBeUndefined();
   });
 
   it('weights the axes and normalizes by the weight sum', () => {
-    // hook .40, funny .35, pocket .25 — all equal means the blend equals the value
-    expect(axisScore(rating(60, 60, 60), DEFAULT_AXIS_POLICY)).toBeCloseTo(60);
-    expect(axisScore(rating(80, 75, 70), DEFAULT_AXIS_POLICY)).toBeCloseTo(
-      (80 * 0.35 + 75 * 0.4 + 70 * 0.25) / 1,
+    // all equal means the blend equals the value
+    expect(axisScore(rating(60, 60, 60, 60), DEFAULT_AXIS_POLICY)).toBeCloseTo(60);
+    expect(axisScore(rating(80, 75, 70, 90), DEFAULT_AXIS_POLICY)).toBeCloseTo(
+      (80 * 0.3 + 75 * 0.3 + 70 * 0.2 + 90 * 0.2) / 1,
     );
   });
 
   it('weights hook highest by default', () => {
-    const hookStrong = axisScore(rating(0, 100, 0), DEFAULT_AXIS_POLICY);
-    const funnyStrong = axisScore(rating(100, 0, 0), DEFAULT_AXIS_POLICY);
-    const pocketStrong = axisScore(rating(0, 0, 100), DEFAULT_AXIS_POLICY);
-    expect(hookStrong).toBeGreaterThan(funnyStrong);
+    const hookStrong = axisScore(rating(0, 100, 0, 0), DEFAULT_AXIS_POLICY);
+    const funnyStrong = axisScore(rating(100, 0, 0, 0), DEFAULT_AXIS_POLICY);
+    const pocketStrong = axisScore(rating(0, 0, 100, 0), DEFAULT_AXIS_POLICY);
+    const coherenceStrong = axisScore(rating(0, 0, 0, 100), DEFAULT_AXIS_POLICY);
+    expect(hookStrong).toBe(funnyStrong);
     expect(funnyStrong).toBeGreaterThan(pocketStrong);
+    expect(pocketStrong).toBe(coherenceStrong);
   });
 
   it('is zero when all weights are zero', () => {
@@ -269,8 +280,9 @@ describe('failedAxis / axisScore', () => {
       hook: { weight: 0, floor: 0 },
       funny: { weight: 0, floor: 0 },
       pocket: { weight: 0, floor: 0 },
+      coherence: { weight: 0, floor: 0 },
     };
-    expect(axisScore(rating(90, 90, 90), zero)).toBe(0);
+    expect(axisScore(rating(90, 90, 90, 90), zero)).toBe(0);
   });
 });
 
@@ -391,6 +403,7 @@ describe('ScoringClipDetector', () => {
               funny: 95,
               hook: 95,
               pocket: 95,
+              coherence: 95,
               kind: 'story',
               reason: 'alligator story',
               ...extra,
@@ -400,6 +413,7 @@ describe('ScoringClipDetector', () => {
               funny: 10,
               hook: 10,
               pocket: 10,
+              coherence: 10,
               kind: 'filler',
               reason: 'stream admin',
             },
@@ -438,6 +452,7 @@ describe('ScoringClipDetector', () => {
           funny: 60,
           hook: 60,
           pocket: 60,
+          coherence: 60,
           kind: 'take',
           reason: 'rated',
         })),
@@ -463,6 +478,7 @@ describe('ScoringClipDetector', () => {
           funny: 95,
           hook: 10,
           pocket: 90,
+          coherence: 90,
           kind: 'story',
           reason: 'rated',
         })),
@@ -484,6 +500,7 @@ describe('ScoringClipDetector', () => {
           funny: 95,
           hook: 10,
           pocket: 90,
+          coherence: 90,
           kind: 'story',
           reason: 'rated',
         })),
@@ -499,6 +516,7 @@ describe('ScoringClipDetector', () => {
         hook: { weight: 0.4, floor: 0 },
         funny: { weight: 0.35, floor: 35 },
         pocket: { weight: 0.25, floor: 30 },
+        coherence: { weight: 0.2, floor: 60 },
       },
     }).detect(transcript, loudness);
     expect(res.length).toBeGreaterThan(0);
@@ -528,6 +546,7 @@ describe('ScoringClipDetector', () => {
       funny: 95,
       hook: 95,
       pocket: 95,
+      coherence: 95,
       quote: 'and then he got arrested for it',
       hookQuote: 'wrestled an alligator behind a waffle house',
     });
@@ -618,6 +637,7 @@ describe('ScoringClipDetector', () => {
                 funny: 90,
                 hook: 90,
                 pocket: 90,
+                coherence: 90,
                 kind: 'story',
                 reason: 'rated',
               }
