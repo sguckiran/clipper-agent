@@ -15,6 +15,7 @@ import { defaultCaptionFontFile, ffmpegBinary, preferredH264Encoder } from '../c
 import type { Caption, Clip, ClipCandidate, SourceVideo } from '../core/types.js';
 import {
   fillChain,
+  fitGraph,
   formatRect,
   stackGraph,
   stackMetrics,
@@ -103,7 +104,7 @@ export function buildFilterSpec(
   subtitleFile?: string,
 ): FilterSpec {
   const titleCaption =
-    subtitleFile && layout === 'fill' && caption.style?.position === undefined
+    subtitleFile && layout !== 'stack' && caption.style?.position === undefined
       ? {
           ...caption,
           style: {
@@ -128,6 +129,9 @@ export function buildFilterSpec(
           : filter,
       ),
     );
+  }
+  if (layout === 'fit') {
+    return fitGraph(postFilters);
   }
   const parts = fillChain(cropX);
   parts.push(...postFilters);

@@ -10,6 +10,7 @@ import {
   cropXExpr,
   drawtextFilter,
   escapeFilterPath,
+  fitGraph,
   FfmpegRenderer,
   formatRect,
   parseRect,
@@ -128,6 +129,25 @@ describe('stackGraph', () => {
   });
 });
 
+describe('fitGraph', () => {
+  it('builds a blurred-background fit layout', () => {
+    const spec = fitGraph();
+    expect(spec.kind).toBe('complex');
+    const g = vf(spec);
+    expect(g).toContain('[0:v]split=2[bgsrc][fgsrc]');
+    expect(g).toContain('force_original_aspect_ratio=increase');
+    expect(g).toContain('boxblur=20:1[bg]');
+    expect(g).toContain('force_original_aspect_ratio=decrease');
+    expect(g).toContain('[bg][fg]overlay=(W-w)/2:(H-h)/2[padded]');
+  });
+
+  it('appends post filters after the fit overlay', () => {
+    const spec = fitGraph(['drawtext=foo', 'subtitles=bar']);
+    expect(spec).toMatchObject({ kind: 'complex', videoLabel: 'vout' });
+    expect(vf(spec)).toContain('[padded]drawtext=foo,subtitles=bar[vout]');
+  });
+});
+
 describe('drawtextFilter', () => {
   it('burns the caption via fontfile + textfile', () => {
     const filter = drawtextFilter({ text: 'WOW' }, FONT, TEXT)!;
@@ -169,7 +189,7 @@ describe('buildFilterSpec', () => {
     expect(vf(spec)).toContain('drawtext');
   });
 
-  it('moves the static hook to the top when synced subtitles are burned', () => {
+  it('moves the static hook to the top when synced subtitles are burned in fill layout', () => {
     const spec = buildFilterSpec(
       { text: 'WOW' },
       FONT,
@@ -182,6 +202,29 @@ describe('buildFilterSpec', () => {
     expect(vf(spec)).toContain('subtitles=filename=');
     expect(vf(spec)).toContain('fontsize=54');
     expect(vf(spec)).toContain('y=text_h');
+  });
+
+  it('moves the static hook to the top when synced subtitles are burned in fit layout', () => {
+    const spec = buildFilterSpec(
+      { text: 'WOW' },
+      FONT,
+      TEXT,
+      'fit',
+      'center',
+      [],
+      '/tmp/subtitles.ass',
+    );
+    expect(vf(spec)).toContain('subtitles=filename=');
+    expect(vf(spec)).toContain('fontsize=54');
+    expect(vf(spec)).toContain('y=text_h');
+  });
+
+  it('fit layout preserves the full frame over a blurred background', () => {
+    const spec = buildFilterSpec({ text: 'WOW' }, FONT, TEXT, 'fit', 'center', []);
+    expect(spec.kind).toBe('complex');
+    expect(vf(spec)).toContain('boxblur=20:1');
+    expect(vf(spec)).toContain('overlay=(W-w)/2:(H-h)/2');
+    expect(vf(spec)).toContain('drawtext');
   });
 
   it('stack layout crops panels and puts the caption in the strip', () => {

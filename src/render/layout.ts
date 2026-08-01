@@ -25,7 +25,7 @@ export interface PanelRect {
   h: number;
 }
 
-export type LayoutMode = 'fill' | 'stack';
+export type LayoutMode = 'fill' | 'fit' | 'stack';
 
 /**
  * Parse an `x,y,w,h` rect. Returns undefined for anything malformed so callers can
@@ -95,6 +95,34 @@ export function fillChain(cropX: string): string[] {
   ];
 }
 
+function appendPostFilters(
+  baseLabel: string,
+  filters: readonly string[],
+  steps: string[],
+): FilterSpec {
+  const chain = filters.filter((f) => f.trim().length > 0).join(',');
+  if (chain.length > 0) {
+    steps.push(`[${baseLabel}]${chain}[vout]`);
+    return { kind: 'complex', graph: steps.join(';'), videoLabel: 'vout' };
+  }
+  return { kind: 'complex', graph: steps.join(';'), videoLabel: baseLabel };
+}
+
+/**
+ * The `fit` graph: keep the whole source visible over a blurred 9:16 background.
+ * This is right for already-vertical, square, or 3:4 clips where `fill` would crop faces.
+ */
+export function fitGraph(postFilters: string | readonly string[] = []): FilterSpec {
+  const filters = typeof postFilters === 'string' ? [postFilters] : postFilters;
+  const steps = [
+    '[0:v]split=2[bgsrc][fgsrc]',
+    `[bgsrc]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase:force_divisible_by=2,crop=${OUT_W}:${OUT_H},boxblur=20:1[bg]`,
+    `[fgsrc]scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=decrease:force_divisible_by=2[fg]`,
+    '[bg][fg]overlay=(W-w)/2:(H-h)/2[padded]',
+  ];
+  return appendPostFilters('padded', filters, steps);
+}
+
 /**
  * The `stack` graph: split the video once per panel, crop and scale each to full width,
  * vstack them, then pad out to a full 1080x1920 so the caption strip exists even when the
@@ -121,10 +149,5 @@ export function stackGraph(
   steps.push(`[stacked]pad=${OUT_W}:${OUT_H}:0:0:black[padded]`);
 
   const filters = typeof postFilters === 'string' ? [postFilters] : postFilters;
-  const chain = filters.filter((f) => f.trim().length > 0).join(',');
-  if (chain.length > 0) {
-    steps.push(`[padded]${chain}[vout]`);
-    return { kind: 'complex', graph: steps.join(';'), videoLabel: 'vout' };
-  }
-  return { kind: 'complex', graph: steps.join(';'), videoLabel: 'padded' };
+  return appendPostFilters('padded', filters, steps);
 }

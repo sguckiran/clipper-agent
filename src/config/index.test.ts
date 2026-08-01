@@ -26,6 +26,7 @@ const MANAGED_KEYS = [
   'CLIPPER_SUBTITLE_MARGIN_V',
   'CLIPPER_SUBTITLE_MAX_WORDS',
   'CLIPPER_SUBTITLE_MIN_DURATION_SEC',
+  'CLIPPER_LAYOUT',
   'CLIPPER_MONITOR_CHANNELS',
   'CLIPPER_MONITOR_INTERVAL_SEC',
 ];
@@ -116,6 +117,12 @@ describe('config', () => {
       accentColor: '#FF00FF',
       maxWordsPerCue: 2,
     });
+  });
+
+  it('accepts the fit render layout', () => {
+    process.env.CLIPPER_LAYOUT = 'fit';
+    resetConfigCache();
+    expect(getConfig().render.layout).toBe('fit');
   });
 
   it('parses monitor channels into a trimmed, non-empty list', () => {
