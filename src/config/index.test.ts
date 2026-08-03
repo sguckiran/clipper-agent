@@ -2,6 +2,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getConfig, requireValue, resetConfigCache } from './index.js';
 
 const MANAGED_KEYS = [
+  'AI_PROVIDER',
+  'OPENAI_API_KEY',
+  'GPT_API_KEY',
+  'GROQ_API_KEY',
+  'CLIPPER_TRANSCRIBE_MODEL',
+  'CLIPPER_WHISPER_MODEL',
   'CLIPPER_RESEARCH_MODEL',
   'CLIPPER_CAPTION_MODEL',
   'CLIPPER_SCORE_LOUDNESS_WEIGHT',
@@ -60,8 +66,10 @@ describe('config', () => {
 
   it('applies model + scoring + clip defaults', () => {
     const cfg = getConfig();
-    expect(cfg.llm.researchModel).toBe('llama-3.3-70b-versatile');
-    expect(cfg.llm.captionModel).toBe('llama-3.3-70b-versatile');
+    expect(cfg.llm.provider).toBe('openai');
+    expect(cfg.llm.transcribeModel).toBe('whisper-1');
+    expect(cfg.llm.researchModel).toBe('gpt-5.6-luna');
+    expect(cfg.llm.captionModel).toBe('gpt-5.6-luna');
     // Transcript-dominant by default: content picks clips, loudness only breaks ties.
     expect(cfg.scoring.transcriptWeight).toBe(0.8);
     expect(cfg.scoring.loudnessWeight).toBe(0.2);
@@ -131,6 +139,35 @@ describe('config', () => {
       accentColor: '#FF00FF',
       maxWordsPerCue: 2,
     });
+  });
+
+  it('uses GPT_API_KEY as an OpenAI key alias', () => {
+    process.env.GPT_API_KEY = 'gpt-key';
+    resetConfigCache();
+    const cfg = getConfig();
+    expect(cfg.llm.provider).toBe('openai');
+    expect(cfg.llm.openaiApiKey).toBe('gpt-key');
+  });
+
+  it('falls back to Groq defaults when auto mode only has a Groq key', () => {
+    process.env.GROQ_API_KEY = 'groq-key';
+    resetConfigCache();
+    const cfg = getConfig();
+    expect(cfg.llm.provider).toBe('groq');
+    expect(cfg.llm.transcribeModel).toBe('whisper-large-v3-turbo');
+    expect(cfg.llm.researchModel).toBe('llama-3.3-70b-versatile');
+    expect(cfg.llm.captionModel).toBe('llama-3.3-70b-versatile');
+  });
+
+  it('lets env vars override provider-aware model defaults', () => {
+    process.env.CLIPPER_TRANSCRIBE_MODEL = 'custom-transcribe';
+    process.env.CLIPPER_RESEARCH_MODEL = 'custom-research';
+    process.env.CLIPPER_CAPTION_MODEL = 'custom-caption';
+    resetConfigCache();
+    const cfg = getConfig();
+    expect(cfg.llm.transcribeModel).toBe('custom-transcribe');
+    expect(cfg.llm.researchModel).toBe('custom-research');
+    expect(cfg.llm.captionModel).toBe('custom-caption');
   });
 
   it('accepts the fit render layout', () => {

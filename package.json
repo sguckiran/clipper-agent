@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Agent for autonomously clipping shortform content from livestreams.",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "packageManager": "pnpm@9.15.9",
   "bin": {
@@ -30,6 +30,7 @@
     "env-paths": "^3.0.0",
     "execa": "^9.5.2",
     "groq-sdk": "^0.36.0",
+    "openai": "^7.3.0",
     "pino": "^9.5.0",
     "playwright-core": "^1.62.0",
     "zod": "^3.24.1"

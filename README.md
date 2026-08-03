@@ -91,11 +91,11 @@ candidate cap — is configurable (see [Configuration](#configuration)).
 
 ## Requirements
 
-- Node.js ≥ 20 and pnpm (`corepack enable` provides pnpm)
+- Node.js ≥ 22 and pnpm (`corepack enable` provides pnpm)
 - [`ffmpeg`](https://ffmpeg.org/) and [`yt-dlp`](https://github.com/yt-dlp/yt-dlp) on `PATH`
   (or set `CLIPPER_FFMPEG_PATH` / `CLIPPER_YT_DLP_PATH`)
-- A `GROQ_API_KEY` from [console.groq.com](https://console.groq.com) — the only API key the
-  pipeline needs (it powers Whisper transcription, clip research, and captions)
+- An OpenAI API key as `GPT_API_KEY` or `OPENAI_API_KEY`. Groq is still supported as a
+  fallback provider with `GROQ_API_KEY`.
 - **Google Chrome** — only needed for **Kick** sources (their VODs are captured via a headless
   browser; see [Sources](#sources)). Not required for YouTube/Twitch/local files.
 
@@ -103,10 +103,10 @@ candidate cap — is configurable (see [Configuration](#configuration)).
 
 ```bash
 pnpm install
-cp .env.example .env          # then edit .env and set GROQ_API_KEY
+cp .env.example .env          # then edit .env and set GPT_API_KEY or OPENAI_API_KEY
 pnpm build
 
-node dist/cli/index.js doctor # verify ffmpeg, yt-dlp and the Groq key are found
+node dist/cli/index.js doctor # verify ffmpeg, yt-dlp and the OpenAI key are found
 node dist/cli/index.js run "<twitch-or-youtube-vod-url>" --limit 10
 ```
 
@@ -213,8 +213,11 @@ see `.env.example` for the full list. Key options:
 
 | Env var                                                | Default                   | Purpose                                                                     |
 | ------------------------------------------------------ | ------------------------- | --------------------------------------------------------------------------- |
-| `GROQ_API_KEY`                                         | —                         | Whisper + research + caption                                                |
-| `CLIPPER_RESEARCH_MODEL` / `CLIPPER_CAPTION_MODEL`     | `llama-3.3-70b-versatile` | Groq model for scoring/captions; drop to `llama-3.1-8b-instant` to cut cost |
+| `AI_PROVIDER`                                          | `auto`                    | `auto`, `openai`, or `groq`; auto prefers OpenAI when its key is present     |
+| `GPT_API_KEY` / `OPENAI_API_KEY`                       | —                         | OpenAI transcription + research + caption                                   |
+| `GROQ_API_KEY`                                         | —                         | Optional Groq fallback                                                       |
+| `CLIPPER_TRANSCRIBE_MODEL`                             | `whisper-1`               | OpenAI speech-to-text model with segment/word timestamps                     |
+| `CLIPPER_RESEARCH_MODEL` / `CLIPPER_CAPTION_MODEL`     | `gpt-5.6-luna`            | OpenAI model for scoring/captions                                            |
 | `CLIPPER_CLIP_MIN_SEC` / `_MAX_SEC` / `_TARGET_SEC`    | `15` / `60` / `30`        | Clip length bounds + target (sentence-aligned)                              |
 | `CLIPPER_MIN_WORDS_PER_SEC`                            | `0.8`                     | Speech gate (drops applause/music)                                          |
 | `CLIPPER_SCORE_TRANSCRIPT_WEIGHT` / `_LOUDNESS_WEIGHT` | `0.8` / `0.2`             | Score blend; content-dominant by design                                     |
@@ -275,7 +278,7 @@ sudo -u clipper pnpm build
 
 # configure
 sudo -u clipper cp .env.example .env
-sudo -u clipper $EDITOR .env   # set GROQ_API_KEY, CLIPPER_MONITOR_CHANNELS, LOG_FORMAT=json
+sudo -u clipper $EDITOR .env   # set GPT_API_KEY, CLIPPER_MONITOR_CHANNELS, LOG_FORMAT=json
 sudo -u clipper chmod 600 .env
 
 # sanity check

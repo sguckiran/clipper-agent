@@ -14,16 +14,23 @@ import type { AxisPolicy, SkillAxis } from '../research/skill.js';
 loadDotenv();
 
 const schema = z.object({
-  // LLM / transcription. Research + caption run on a small, cheap Groq model so the
-  // per-window prompts stay affordable at scale; ANTHROPIC_API_KEY is retained for
-  // future modules but is not required by the current pipeline.
+  // LLM / transcription. `auto` prefers OpenAI when GPT_API_KEY/OPENAI_API_KEY is present,
+  // otherwise falls back to Groq. ANTHROPIC_API_KEY is retained for future modules but is
+  // not required by the current pipeline.
+  AI_PROVIDER: z.enum(['auto', 'openai', 'groq']).default('auto'),
+  OPENAI_API_KEY: z.string().optional(),
+  // User-friendly alias accepted because this project is being driven locally, not as a
+  // packaged SDK. OPENAI_API_KEY remains the conventional name.
+  GPT_API_KEY: z.string().optional(),
   GROQ_API_KEY: z.string().optional(),
   ANTHROPIC_API_KEY: z.string().optional(),
-  CLIPPER_WHISPER_MODEL: z.string().default('whisper-large-v3-turbo'),
-  // Research + caption run on a capable Groq model for coherent scoring/captions.
-  // Swap for a smaller model (e.g. llama-3.1-8b-instant) to cut cost.
-  CLIPPER_RESEARCH_MODEL: z.string().default('llama-3.3-70b-versatile'),
-  CLIPPER_CAPTION_MODEL: z.string().default('llama-3.3-70b-versatile'),
+  // Preferred name for the speech-to-text model. CLIPPER_WHISPER_MODEL is still accepted
+  // as a legacy alias.
+  CLIPPER_TRANSCRIBE_MODEL: z.string().optional(),
+  CLIPPER_WHISPER_MODEL: z.string().optional(),
+  // Research + caption model overrides. Defaults are provider-aware in getConfig().
+  CLIPPER_RESEARCH_MODEL: z.string().optional(),
+  CLIPPER_CAPTION_MODEL: z.string().optional(),
   // Audio is chunked to this length before transcription to stay under the Whisper
   // upload limit (~4.8 MB per chunk at 16 kHz mono 64 kbps for the default).
   CLIPPER_TRANSCRIBE_CHUNK_SEC: z.coerce.number().int().positive().default(600),
@@ -159,10 +166,16 @@ const schema = z.object({
 
 export type RawConfig = z.infer<typeof schema>;
 
+export type AiProvider = 'openai' | 'groq';
+
 export interface Config {
   llm: {
+    provider: AiProvider;
+    openaiApiKey?: string;
     groqApiKey?: string;
     anthropicApiKey?: string;
+    transcribeModel: string;
+    /** @deprecated use transcribeModel */
     whisperModel: string;
     researchModel: string;
     captionModel: string;
@@ -280,19 +293,46 @@ function splitCsv(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
+function resolveProvider(raw: RawConfig['AI_PROVIDER'], openaiKey?: string, groqKey?: string): AiProvider {
+  if (raw === 'openai' || raw === 'groq') return raw;
+  if (openaiKey) return 'openai';
+  if (groqKey) return 'groq';
+  return 'openai';
+}
+
+function defaultTranscribeModel(provider: AiProvider): string {
+  // OpenAI's gpt-4o-mini-transcribe currently rejects verbose_json in this account, which
+  // means no segment/word timestamps for clip windows/subtitles. whisper-1 supports the
+  // timestamp shape this pipeline needs.
+  return provider === 'openai' ? 'whisper-1' : 'whisper-large-v3-turbo';
+}
+
+function defaultResearchModel(provider: AiProvider): string {
+  return provider === 'openai' ? 'gpt-5.6-luna' : 'llama-3.3-70b-versatile';
+}
+
 let cached: Config | undefined;
 
 /** Parse and cache config. Throws if env is structurally invalid. */
 export function getConfig(): Config {
   if (cached) return cached;
   const env = schema.parse(process.env);
+  const openaiApiKey = env.OPENAI_API_KEY || env.GPT_API_KEY;
+  const provider = resolveProvider(env.AI_PROVIDER, openaiApiKey, env.GROQ_API_KEY);
+  const transcribeModel =
+    env.CLIPPER_TRANSCRIBE_MODEL ?? env.CLIPPER_WHISPER_MODEL ?? defaultTranscribeModel(provider);
+  const researchModel = env.CLIPPER_RESEARCH_MODEL ?? defaultResearchModel(provider);
+  const captionModel = env.CLIPPER_CAPTION_MODEL ?? researchModel;
   cached = {
     llm: {
+      provider,
+      openaiApiKey,
       groqApiKey: env.GROQ_API_KEY,
       anthropicApiKey: env.ANTHROPIC_API_KEY,
-      whisperModel: env.CLIPPER_WHISPER_MODEL,
-      researchModel: env.CLIPPER_RESEARCH_MODEL,
-      captionModel: env.CLIPPER_CAPTION_MODEL,
+      transcribeModel,
+      whisperModel: transcribeModel,
+      researchModel,
+      captionModel,
       transcribeChunkSec: env.CLIPPER_TRANSCRIBE_CHUNK_SEC,
     },
     scoring: {

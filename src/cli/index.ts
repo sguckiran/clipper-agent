@@ -66,8 +66,12 @@ async function doctor(): Promise<number> {
 
   log.info(
     {
+      provider: cfg.llm.provider,
+      openai: Boolean(cfg.llm.openaiApiKey),
       groq: Boolean(cfg.llm.groqApiKey),
       anthropic: Boolean(cfg.llm.anthropicApiKey),
+      transcribeModel: cfg.llm.transcribeModel,
+      researchModel: cfg.llm.researchModel,
     },
     'llm credentials present',
   );

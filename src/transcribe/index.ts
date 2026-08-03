@@ -1,6 +1,6 @@
 /**
- * Transcribe module: extracts audio with ffmpeg and transcribes it via Groq
- * Whisper. Implements the {@link Transcriber} contract. The Whisper client and
+ * Transcribe module: extracts audio with ffmpeg and transcribes it via an injected
+ * speech-to-text API client. Implements the {@link Transcriber} contract. The client and
  * the subprocess runner are injected so tests never touch ffmpeg or the network.
  *
  * Long VODs exceed Whisper's upload size limit, so the audio is downmixed to
@@ -28,7 +28,7 @@ export interface TranscriptionResponse {
   words?: Array<{ start: number; end: number; word?: string; text?: string }>;
 }
 
-/** Minimal Whisper client the transcriber depends on (adapter in ./groq-client.ts). */
+/** Minimal speech-to-text client the transcriber depends on (provider adapters live beside it). */
 export interface TranscriptionClient {
   transcribe(input: { filePath: string; model: string }): Promise<TranscriptionResponse>;
 }
@@ -150,7 +150,7 @@ export class GroqTranscriber implements Transcriber {
     this.client = opts.client;
     this.runner = opts.runner ?? execaRunner;
     this.ffmpeg = opts.ffmpeg ?? ffmpegBinary();
-    this.model = opts.model ?? getConfig().llm.whisperModel;
+    this.model = opts.model ?? getConfig().llm.transcribeModel;
     this.chunkSeconds = opts.chunkSeconds ?? getConfig().llm.transcribeChunkSec;
     this.chunkRetries = opts.chunkRetries ?? 4;
     this.workDirOverride = opts.workDir;
