@@ -275,6 +275,13 @@ describe('buildFilterSpec', () => {
     expect(vf(spec)).toContain('crop=600:448:634:74');
     expect(vf(spec)).not.toContain('drawtext');
   });
+
+  it('auto layout falls back to the normal fill crop in the filter builder', () => {
+    const spec = buildFilterSpec({ text: 'WOW' }, FONT, TEXT, 'auto', 'center', PANELS);
+    expect(spec.kind).toBe('vf');
+    expect(vf(spec)).toContain('scale=1080:1920:force_original_aspect_ratio=increase');
+    expect(vf(spec)).toContain('crop=1080:1920');
+  });
 });
 
 describe('buildRenderArgs', () => {
@@ -432,5 +439,25 @@ describe('FfmpegRenderer', () => {
     expect(line).toContain('-filter_complex');
     expect(line).toContain('crop=600:448:634:74');
     expect(line).toContain('-map [sp0] -map 0:a?');
+  });
+
+  it('renders auto layout as stack only when the candidate asks for it', async () => {
+    const outDir = await mkdtemp(join(tmpdir(), 'clipper-clips-'));
+    const runner = fakeRunner();
+    const renderer = new FfmpegRenderer({
+      runner,
+      ffmpeg: 'ffmpeg',
+      encoder: 'libx264',
+      fontFile: FONT,
+      outDir,
+      layout: 'auto',
+      panels: PANELS,
+    });
+    await renderer.render(source, { ...candidate, renderLayout: 'stack' }, { text: 'split this' });
+
+    const [, args] = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0];
+    const line = (args as string[]).join(' ');
+    expect(line).toContain('-filter_complex');
+    expect(line).toContain('vstack=inputs=2');
   });
 });

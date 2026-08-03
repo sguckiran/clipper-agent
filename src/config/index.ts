@@ -120,9 +120,10 @@ const schema = z.object({
   // Reframing layout. 'fill' scales the whole frame and slices 9:16 out of it — right for
   // normal landscape footage. 'fit' preserves the full frame over a blurred 9:16
   // background — right for already-vertical/square/3:4 sources. 'stack' crops named panels
-  // out of the source and stacks them vertically. 'speaker' crops one configured panel at
-  // a time based on local motion, useful for Omegle-style two-person webcam videos.
-  CLIPPER_LAYOUT: z.enum(['fill', 'fit', 'stack', 'speaker']).default('fill'),
+  // out of the source and stacks them vertically. 'auto' renders candidates marked by the
+  // rater as Omegle/OmeTV using stack and falls back to fill otherwise. 'speaker' is an
+  // experimental motion-based crop mode and is not recommended as a default.
+  CLIPPER_LAYOUT: z.enum(['fill', 'fit', 'stack', 'speaker', 'auto']).default('fill'),
   // Panels to stack, semicolon-separated "x,y,w,h" rects in SOURCE pixels, top to bottom.
   // Find them by extracting a frame and reading the coordinates off it:
   //   ffmpeg -ss 600 -i vod.mp4 -frames:v 1 frame.png
@@ -220,7 +221,7 @@ export interface Config {
     };
     /** Horizontal focus of the crop: 'center' | 'left' | 'right' | numeric 0..1. */
     cropX: string;
-    /** Reframing layout: whole-frame slice, or stacked source panels. */
+    /** Reframing layout: whole-frame slice, stacked source panels, or per-candidate auto. */
     layout: LayoutMode;
     /** Source panels to stack, top to bottom (only used when layout is 'stack'). */
     panels: PanelRect[];

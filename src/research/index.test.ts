@@ -529,11 +529,12 @@ describe('ScoringClipDetector', () => {
     expect((scorer.scoreBatch as ReturnType<typeof vi.fn>).mock.calls[0][0]).toHaveLength(2);
   });
 
-  it('carries the axis scores, quotes, kind and reason onto the candidate', async () => {
+  it('carries the axis scores, quotes, layout hint, kind and reason onto the candidate', async () => {
     const det = mk({
       scorer: contentScorer({
         punchQuote: 'and then he got arrested for it',
         hookQuote: 'wrestled an alligator behind a waffle house',
+        visualLayout: 'omegle',
       }),
       minScore: 0,
       maxCandidates: 1,
@@ -547,6 +548,7 @@ describe('ScoringClipDetector', () => {
       hook: 95,
       pocket: 95,
       coherence: 95,
+      renderLayout: 'stack',
       quote: 'and then he got arrested for it',
       hookQuote: 'wrestled an alligator behind a waffle house',
     });

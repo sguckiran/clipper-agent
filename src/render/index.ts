@@ -110,6 +110,9 @@ export function buildFilterSpec(
   const postFilters: string[] = [];
   if (subtitleFile) postFilters.push(subtitlesFilter(subtitleFile, fontFile));
 
+  if (layout === 'auto') {
+    return fillGraph(cropX, postFilters);
+  }
   if (layout === 'speaker') {
     return speakerGraph(panels, speakerFocus, postFilters);
   }
@@ -119,6 +122,10 @@ export function buildFilterSpec(
   if (layout === 'fit') {
     return fitGraph(postFilters);
   }
+  return fillGraph(cropX, postFilters);
+}
+
+function fillGraph(cropX: string, postFilters: readonly string[]): FilterSpec {
   const parts = fillChain(cropX);
   parts.push(...postFilters);
   return { kind: 'vf', filter: parts.join(',') };
@@ -211,7 +218,10 @@ export class FfmpegRenderer implements Renderer {
     // Fail at construction, not mid-render: the factory builds the renderer before any
     // download starts, so a misconfigured layout surfaces in seconds rather than after
     // an hour of transcription.
-    if ((this.layout === 'stack' || this.layout === 'speaker') && this.panels.length < 2) {
+    if (
+      (this.layout === 'stack' || this.layout === 'speaker' || this.layout === 'auto') &&
+      this.panels.length < 2
+    ) {
       throw new Error(
         `CLIPPER_LAYOUT=${this.layout} needs at least two panels — set CLIPPER_PANELS to ` +
           'semicolon-separated "x,y,w,h" rects (e.g. "34,74,600,448;634,74,600,448")',
@@ -234,8 +244,14 @@ export class FfmpegRenderer implements Renderer {
     if (ass) {
       await writeFile(subtitleFile, ass, 'utf8');
     }
+    const effectiveLayout =
+      this.layout === 'auto'
+        ? candidate.renderLayout === 'stack'
+          ? 'stack'
+          : 'fill'
+        : this.layout;
     const speakerFocus =
-      this.layout === 'speaker'
+      effectiveLayout === 'speaker'
         ? await this.speakerAnalyzer(
             source.localPath,
             candidate.startSec,
@@ -248,7 +264,7 @@ export class FfmpegRenderer implements Renderer {
       caption,
       this.fontFile,
       '',
-      this.layout,
+      effectiveLayout,
       this.cropX,
       this.panels,
       ass ? subtitleFile : undefined,
@@ -263,7 +279,14 @@ export class FfmpegRenderer implements Renderer {
       output,
     );
     this.log.info(
-      { id: candidate.id, encoder: this.encoder, layout: this.layout, speakerFocus },
+      {
+        id: candidate.id,
+        encoder: this.encoder,
+        layout: this.layout,
+        effectiveLayout,
+        renderHint: candidate.renderLayout,
+        speakerFocus,
+      },
       'rendering clip',
     );
     await this.runner.run(this.ffmpeg, args);

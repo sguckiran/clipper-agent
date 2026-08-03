@@ -53,6 +53,7 @@ describe('parseBatchScores', () => {
           coherence: 85,
           hook_quote: '  WAIT you did what  ',
           punch_quote: '  and then he got arrested  ',
+          visual_layout: 'omegle',
           risky: true,
         }),
       ]),
@@ -68,6 +69,7 @@ describe('parseBatchScores', () => {
       kind: 'unrated',
       reason: '',
       risky: true,
+      visualLayout: 'omegle',
     });
   });
 
@@ -152,6 +154,7 @@ describe('CLIP_SKILL_MD', () => {
       'coherence',
       'hook_quote',
       'punch_quote',
+      'visual_layout',
       'risky',
     ]) {
       expect(CLIP_SKILL_MD).toContain(`"${field}"`);

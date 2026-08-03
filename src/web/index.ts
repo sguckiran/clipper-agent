@@ -165,9 +165,9 @@ async function runJob(job: WebJob): Promise<void> {
     const cfg = getConfig();
     const pipeline = createDefaultPipeline({
       renderer:
-        job.layout === 'speaker'
+        job.layout === 'auto'
           ? {
-              layout: 'speaker',
+              layout: 'auto',
               panels: cfg.render.panels.length > 0 ? cfg.render.panels : KRIMOE_OMEGLE_PANELS,
             }
           : undefined,
@@ -229,7 +229,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: st
       return;
     }
     const cfg = getConfig();
-    const speakerPan = body.speakerPan === true || body.speakerPan === 'true';
+    const autoOmegle = body.autoOmegle === true || body.autoOmegle === 'true';
     const job: WebJob = {
       id: randomUUID(),
       url,
@@ -238,7 +238,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: st
       updatedAt: new Date().toISOString(),
       limit: asNumber(body.limit, Math.max(30, cfg.scoring.maxCandidates), 1, 100),
       minScore: asNumber(body.minScore, cfg.scoring.minScore, 0, 100),
-      layout: speakerPan ? 'speaker' : cfg.render.layout,
+      layout: autoOmegle ? 'auto' : cfg.render.layout,
       message: 'Queued. Waiting for the current job to finish...',
       clips: [],
     };
@@ -321,7 +321,7 @@ const html = String.raw`<!doctype html>
       <input id="url" required placeholder="https://www.youtube.com/watch?v=..." />
       <input id="limit" type="number" min="1" max="100" value="30" title="Max clips" />
       <input id="minScore" type="number" min="0" max="100" value="55" title="Minimum score" />
-      <label class="check"><input id="speakerPan" type="checkbox" /> Omegle speaker pan</label>
+      <label class="check"><input id="autoOmegle" type="checkbox" checked /> Auto Omegle split</label>
       <button id="submit">Clip it</button>
     </form>
     <section class="panel">
@@ -340,7 +340,7 @@ const html = String.raw`<!doctype html>
     const url = document.querySelector('#url');
     const limit = document.querySelector('#limit');
     const minScore = document.querySelector('#minScore');
-    const speakerPan = document.querySelector('#speakerPan');
+    const autoOmegle = document.querySelector('#autoOmegle');
     const submit = document.querySelector('#submit');
     const message = document.querySelector('#message');
     const sub = document.querySelector('#sub');
@@ -428,7 +428,7 @@ const html = String.raw`<!doctype html>
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       clearTimeout(timer);
-      setStatus({ status: 'queued', message: 'Submitting job...', clips: [], limit: limit.value, minScore: minScore.value, layout: speakerPan.checked ? 'speaker' : 'fill' });
+      setStatus({ status: 'queued', message: 'Submitting job...', clips: [], limit: limit.value, minScore: minScore.value, layout: autoOmegle.checked ? 'auto' : 'fill' });
       const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -436,12 +436,12 @@ const html = String.raw`<!doctype html>
           url: url.value,
           limit: limit.value,
           minScore: minScore.value,
-          speakerPan: speakerPan.checked,
+          autoOmegle: autoOmegle.checked,
         }),
       });
       const job = await res.json();
       if (!res.ok) {
-        setStatus({ status: 'failed', message: job.error || 'Failed to submit job', clips: [], limit: limit.value, minScore: minScore.value, layout: speakerPan.checked ? 'speaker' : 'fill' });
+        setStatus({ status: 'failed', message: job.error || 'Failed to submit job', clips: [], limit: limit.value, minScore: minScore.value, layout: autoOmegle.checked ? 'auto' : 'fill' });
         return;
       }
       render(job);

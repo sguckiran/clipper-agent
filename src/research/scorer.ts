@@ -38,6 +38,8 @@ export interface ScoredText {
   reason: string;
   /** Informational only: posting this as-is might get a channel actioned. */
   risky: boolean;
+  /** Whether this transcript sounds like a two-panel Omegle/OmeTV stranger chat clip. */
+  visualLayout: 'omegle' | 'normal' | 'unknown';
 }
 
 /** Rates transcript snippets in a batch. Same length and order as the input. */
@@ -60,6 +62,7 @@ export const NEUTRAL_SCORE: ScoredText = {
   kind: 'unrated',
   reason: '(rater unavailable)',
   risky: false,
+  visualLayout: 'unknown',
 };
 
 /**
@@ -107,6 +110,7 @@ const ratingSchema = z.object({
   kind: z.string().default(''),
   reason: z.string().default(''),
   risky: z.coerce.boolean().default(false),
+  visual_layout: z.enum(['omegle', 'normal', 'unknown']).default('unknown'),
 });
 
 function clamp(n: number, lo: number, hi: number): number {
@@ -146,6 +150,7 @@ export function parseBatchScores(raw: string, count: number): ScoredText[] {
       kind: r.data.kind.trim() || 'unrated',
       reason: r.data.reason.trim(),
       risky: r.data.risky,
+      visualLayout: r.data.visual_layout,
     };
   }
   return out;

@@ -147,6 +147,14 @@ describe('config', () => {
     expect(getConfig().render.panels).toHaveLength(2);
   });
 
+  it('accepts the auto render layout', () => {
+    process.env.CLIPPER_LAYOUT = 'auto';
+    process.env.CLIPPER_PANELS = '34,74,600,448;634,74,600,448';
+    resetConfigCache();
+    expect(getConfig().render.layout).toBe('auto');
+    expect(getConfig().render.panels).toHaveLength(2);
+  });
+
   it('parses monitor channels into a trimmed, non-empty list', () => {
     process.env.CLIPPER_MONITOR_CHANNELS = ' https://a.tv/x , , https://b.tv/y ';
     resetConfigCache();

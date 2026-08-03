@@ -51,9 +51,11 @@ export const DEFAULT_AXIS_POLICY: Record<SkillAxis, AxisPolicy> = {
  *     independent judgement. Streamer notes no longer assume only stranger reactions clip.
  * v4: adds standalone coherence as a hard floor so funny fragments that need missing context
  *     do not get rendered.
+ * v5: adds a transcript-only visual layout hint so Omegle/OmeTV clips can be rendered as
+ *     stacked two-panel clips while non-Omegle clips keep the normal layout.
  */
 export const SKILL_NAME = 'clip-skill';
-export const SKILL_VERSION = 'v4';
+export const SKILL_VERSION = 'v5';
 
 /**
  * The bundled skill text. Seeded to disk on first run; edit the on-disk copy to tune.
@@ -207,12 +209,25 @@ Reply with ONLY this JSON, one entry per snippet, preserving the given \`i\` num
   "punch_quote": "verbatim line the clip pays off on, max 15 words, empty if none",
   "kind": "story|take|rant|reaction|joke|argument|filler",
   "reason": "max 8 words",
+  "visual_layout": "omegle|normal|unknown",
   "risky": false
 }]}
 \`\`\`
 
 \`risky\` is informational only and never changes a score: set it true if posting the clip
 as-is would plausibly get a channel actioned. Rate the content on its merits either way.
+
+\`visual_layout\` is a render hint, not a quality score. Use:
+
+- \`omegle\` only when the transcript clearly sounds like a random stranger video-chat/Omegle
+  exchange: asking where someone is from, age/name/camera questions, "skip/next", reacting
+  to a stranger appearing/disappearing, or a direct back-and-forth with an unknown guest.
+- \`normal\` when it is clearly not that: solo stream talk, chat/admin, watching a TikTok,
+  studio/stage content, music/performance, or commentary not involving a live stranger call.
+- \`unknown\` when the transcript alone does not make the layout clear.
+
+Be conservative. A false \`omegle\` hint creates a bad split-screen render, so only use it
+when the transcript strongly indicates a two-person stranger video call.
 
 ## Streamer notes
 

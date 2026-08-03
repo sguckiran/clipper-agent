@@ -589,6 +589,7 @@ export class ScoringClipDetector implements ClipDetector {
         hook: rating.hook,
         pocket: rating.pocket,
         coherence: rating.coherence,
+        renderLayout: rating.visualLayout === 'omegle' ? 'stack' : 'default',
         unpostable: rating.risky,
       });
     }
@@ -618,6 +619,7 @@ export class ScoringClipDetector implements ClipDetector {
           hook: c.hook,
           pocket: c.pocket,
           coherence: c.coherence,
+          renderLayout: c.renderLayout,
           kind: c.kind,
           risky: c.unpostable,
           hookQuote: c.hookQuote,

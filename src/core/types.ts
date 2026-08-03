@@ -105,6 +105,8 @@ export interface ClipCandidate {
   hook?: number;
   pocket?: number;
   coherence?: number;
+  /** Optional render hint from the rater, e.g. stack two webcam panels for Omegle clips. */
+  renderLayout?: 'stack' | 'default';
   /** Rater's guess that posting this as-is would get an account actioned. */
   unpostable?: boolean;
 }

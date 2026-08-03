@@ -234,8 +234,8 @@ see `.env.example` for the full list. Key options:
 | `CLIPPER_SUBTITLE_ACCENT_COLOR`                        | `#FFE600`                 | Highlight colour for the emphasized word in each subtitle cue               |
 | `CLIPPER_SUBTITLE_MARGIN_V`                            | `610`                     | Vertical subtitle placement from the bottom of the 1080x1920 frame          |
 | `CLIPPER_SUBTITLE_MAX_WORDS`                           | `3`                       | Max words per synced subtitle cue                                           |
-| `CLIPPER_LAYOUT`                                       | `fill`                    | `fill`, `fit`, `stack`, or `speaker` for Omegle-style active-speaker crops   |
-| `CLIPPER_PANELS`                                       | —                         | `stack`/`speaker` panels: `x,y,w,h` rects, semicolon-separated              |
+| `CLIPPER_LAYOUT`                                       | `fill`                    | `fill`, `fit`, `stack`, or `auto` (`auto` stacks Groq-marked Omegle clips)   |
+| `CLIPPER_PANELS`                                       | —                         | `stack`/`auto` panels: `x,y,w,h` rects, semicolon-separated                 |
 | `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
 | `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                 | Channels to poll + interval                                                 |
 | `CLIPPER_DATA_DIR`                                     | OS default                | Where downloads / clips / queue live                                        |

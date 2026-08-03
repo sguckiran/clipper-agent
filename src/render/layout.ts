@@ -25,7 +25,7 @@ export interface PanelRect {
   h: number;
 }
 
-export type LayoutMode = 'fill' | 'fit' | 'stack' | 'speaker';
+export type LayoutMode = 'fill' | 'fit' | 'stack' | 'speaker' | 'auto';
 
 /**
  * Parse an `x,y,w,h` rect. Returns undefined for anything malformed so callers can
