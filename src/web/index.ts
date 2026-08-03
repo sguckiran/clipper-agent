@@ -9,6 +9,7 @@ import { getConfig } from '../config/index.js';
 import { createLogger } from '../core/logger.js';
 import type { Clip, ClipCandidate } from '../core/types.js';
 import { createDefaultPipeline } from '../pipeline/factory.js';
+import type { LayoutMode, PanelRect } from '../render/index.js';
 
 const log = createLogger('web');
 
@@ -45,6 +46,7 @@ export interface WebJob {
   updatedAt: string;
   limit: number;
   minScore: number;
+  layout: LayoutMode;
   message: string;
   error?: string;
   clips: WebClip[];
@@ -52,6 +54,11 @@ export interface WebJob {
 
 const jobs = new Map<string, WebJob>();
 let queue: Promise<void> = Promise.resolve();
+
+const KRIMOE_OMEGLE_PANELS: PanelRect[] = [
+  { x: 34, y: 74, w: 600, h: 448 },
+  { x: 634, y: 74, w: 600, h: 448 },
+];
 
 function clampScore(n: number): number {
   if (!Number.isFinite(n)) return 0;
@@ -155,14 +162,24 @@ async function runJob(job: WebJob): Promise<void> {
   job.message = 'Downloading, transcribing, scoring and rendering clips...';
   job.updatedAt = new Date().toISOString();
   try {
-    const pipeline = createDefaultPipeline();
+    const cfg = getConfig();
+    const pipeline = createDefaultPipeline({
+      renderer:
+        job.layout === 'speaker'
+          ? {
+              layout: 'speaker',
+              panels: cfg.render.panels.length > 0 ? cfg.render.panels : KRIMOE_OMEGLE_PANELS,
+            }
+          : undefined,
+    });
     const result = await pipeline.run(job.url, { limit: job.limit, minScore: job.minScore });
-    job.clips = result.clips.map((clip) => toWebClip(job.id, clip));
+    const rendered = result.clips.map((clip) => toWebClip(job.id, clip));
+    job.clips = rendered.filter((clip) => clip.quality >= job.minScore);
     job.status = 'done';
     job.message =
       job.clips.length === 0
         ? 'Done, but no clips cleared the AND-gated score threshold.'
-        : `Done. Rendered ${job.clips.length} clips, ranked by quality.`;
+        : `Done. Rendered ${rendered.length} clips; ${job.clips.length} cleared the quality gate.`;
     job.updatedAt = new Date().toISOString();
   } catch (err) {
     job.status = 'failed';
@@ -212,6 +229,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: st
       return;
     }
     const cfg = getConfig();
+    const speakerPan = body.speakerPan === true || body.speakerPan === 'true';
     const job: WebJob = {
       id: randomUUID(),
       url,
@@ -220,6 +238,7 @@ async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: st
       updatedAt: new Date().toISOString(),
       limit: asNumber(body.limit, Math.max(30, cfg.scoring.maxCandidates), 1, 100),
       minScore: asNumber(body.minScore, cfg.scoring.minScore, 0, 100),
+      layout: speakerPan ? 'speaker' : cfg.render.layout,
       message: 'Queued. Waiting for the current job to finish...',
       clips: [],
     };
@@ -266,11 +285,13 @@ const html = String.raw`<!doctype html>
     main { width: min(1180px, calc(100vw - 32px)); margin: 32px auto 64px; }
     h1 { margin: 0 0 6px; font-size: clamp(32px, 6vw, 64px); letter-spacing: -0.06em; }
     p { color: #aeb6c7; line-height: 1.5; }
-    form { display: grid; grid-template-columns: 1fr 120px 130px auto; gap: 10px; margin: 28px 0; }
+    form { display: grid; grid-template-columns: 1fr 120px 130px 190px auto; gap: 10px; margin: 28px 0; }
     input, button { border: 1px solid #2a3040; border-radius: 14px; padding: 14px 16px; font: inherit; }
     input { background: #11141c; color: #fff; }
     button { background: #f4e500; color: #090909; font-weight: 800; cursor: pointer; }
     button:disabled { opacity: .55; cursor: wait; }
+    .check { display: flex; align-items: center; gap: 8px; color: #dce3f4; background: #11141c; border: 1px solid #2a3040; border-radius: 14px; padding: 10px 12px; }
+    .check input { width: 18px; height: 18px; }
     .panel { background: linear-gradient(180deg, #121621, #0e1118); border: 1px solid #252b38; border-radius: 22px; padding: 18px; }
     .status { display: flex; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 20px; }
     .pill { border-radius: 999px; padding: 7px 11px; background: #232a38; color: #dce3f4; font-size: 13px; font-weight: 800; text-transform: uppercase; }
@@ -300,6 +321,7 @@ const html = String.raw`<!doctype html>
       <input id="url" required placeholder="https://www.youtube.com/watch?v=..." />
       <input id="limit" type="number" min="1" max="100" value="30" title="Max clips" />
       <input id="minScore" type="number" min="0" max="100" value="55" title="Minimum score" />
+      <label class="check"><input id="speakerPan" type="checkbox" /> Omegle speaker pan</label>
       <button id="submit">Clip it</button>
     </form>
     <section class="panel">
@@ -318,6 +340,7 @@ const html = String.raw`<!doctype html>
     const url = document.querySelector('#url');
     const limit = document.querySelector('#limit');
     const minScore = document.querySelector('#minScore');
+    const speakerPan = document.querySelector('#speakerPan');
     const submit = document.querySelector('#submit');
     const message = document.querySelector('#message');
     const sub = document.querySelector('#sub');
@@ -329,7 +352,7 @@ const html = String.raw`<!doctype html>
       state.textContent = job ? job.status : 'idle';
       message.textContent = job ? job.message : 'No job running.';
       sub.textContent = job
-        ? job.clips.length + ' clips · limit ' + job.limit + ' · minimum score ' + job.minScore
+        ? job.clips.length + ' clips · limit ' + job.limit + ' · minimum score ' + job.minScore + ' · layout ' + job.layout
         : 'Quality = min(overall virality, funny, hook, coherence). Low coherence caps the clip.';
       submit.disabled = job && (job.status === 'queued' || job.status === 'running');
     }
@@ -405,15 +428,20 @@ const html = String.raw`<!doctype html>
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       clearTimeout(timer);
-      setStatus({ status: 'queued', message: 'Submitting job...', clips: [], limit: limit.value, minScore: minScore.value });
+      setStatus({ status: 'queued', message: 'Submitting job...', clips: [], limit: limit.value, minScore: minScore.value, layout: speakerPan.checked ? 'speaker' : 'fill' });
       const res = await fetch('/api/jobs', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ url: url.value, limit: limit.value, minScore: minScore.value }),
+        body: JSON.stringify({
+          url: url.value,
+          limit: limit.value,
+          minScore: minScore.value,
+          speakerPan: speakerPan.checked,
+        }),
       });
       const job = await res.json();
       if (!res.ok) {
-        setStatus({ status: 'failed', message: job.error || 'Failed to submit job', clips: [], limit: limit.value, minScore: minScore.value });
+        setStatus({ status: 'failed', message: job.error || 'Failed to submit job', clips: [], limit: limit.value, minScore: minScore.value, layout: speakerPan.checked ? 'speaker' : 'fill' });
         return;
       }
       render(job);

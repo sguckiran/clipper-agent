@@ -139,6 +139,14 @@ describe('config', () => {
     expect(getConfig().render.layout).toBe('fit');
   });
 
+  it('accepts the speaker render layout', () => {
+    process.env.CLIPPER_LAYOUT = 'speaker';
+    process.env.CLIPPER_PANELS = '34,74,600,448;634,74,600,448';
+    resetConfigCache();
+    expect(getConfig().render.layout).toBe('speaker');
+    expect(getConfig().render.panels).toHaveLength(2);
+  });
+
   it('parses monitor channels into a trimmed, non-empty list', () => {
     process.env.CLIPPER_MONITOR_CHANNELS = ' https://a.tv/x , , https://b.tv/y ';
     resetConfigCache();

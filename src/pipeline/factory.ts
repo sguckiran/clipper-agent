@@ -8,14 +8,18 @@ import { createDownloader } from '../ingest/index.js';
 import { createGroqChatClient } from '../llm/groq.js';
 import { createLoudnessAnalyzer } from '../loudness/index.js';
 import { createCaptionWriter } from '../render/caption.js';
-import { createRenderer } from '../render/index.js';
+import { createRenderer, type RendererOptions } from '../render/index.js';
 import { createPromptStore } from '../prompts/index.js';
 import { createChatScorer, createClipDetector, promptStoreSkillLoader } from '../research/index.js';
 import { GroqTranscriber } from '../transcribe/index.js';
 import { createGroqTranscriptionClient } from '../transcribe/groq-client.js';
 import { ClippingPipeline } from './index.js';
 
-export function createDefaultPipeline(): ClippingPipeline {
+export interface DefaultPipelineOptions {
+  renderer?: RendererOptions;
+}
+
+export function createDefaultPipeline(opts: DefaultPipelineOptions = {}): ClippingPipeline {
   const cfg = getConfig();
   const chat = createGroqChatClient();
   return new ClippingPipeline({
@@ -33,6 +37,6 @@ export function createDefaultPipeline(): ClippingPipeline {
       }),
     }),
     captionWriter: createCaptionWriter({ chat }),
-    renderer: createRenderer(),
+    renderer: createRenderer(opts.renderer),
   });
 }

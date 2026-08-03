@@ -15,6 +15,7 @@ import {
   formatRect,
   parseRect,
   scaledPanelHeight,
+  speakerGraph,
   stackCaptionY,
   stackGraph,
   stackMetrics,
@@ -148,6 +149,30 @@ describe('fitGraph', () => {
   });
 });
 
+describe('speakerGraph', () => {
+  it('crops the active panel for each focus segment and concatenates them', () => {
+    const spec = speakerGraph(PANELS, [
+      { startSec: 0, endSec: 2, panel: 0 },
+      { startSec: 2, endSec: 5, panel: 1 },
+    ]);
+    expect(spec).toMatchObject({ kind: 'complex', videoLabel: 'focused' });
+    const g = vf(spec);
+    expect(g).toContain('trim=start=0.000:end=2.000');
+    expect(g).toContain('crop=600:448:34:74');
+    expect(g).toContain('trim=start=2.000:end=5.000');
+    expect(g).toContain('crop=600:448:634:74');
+    expect(g).toContain('[sp0][sp1]concat=n=2:v=1:a=0[focused]');
+  });
+
+  it('appends subtitles after the speaker-focused video stream', () => {
+    const spec = speakerGraph(PANELS, [{ startSec: 0, endSec: 2, panel: 0 }], [
+      'subtitles=foo',
+    ]);
+    expect(spec).toMatchObject({ kind: 'complex', videoLabel: 'vout' });
+    expect(vf(spec)).toContain('[sp0]subtitles=foo[vout]');
+  });
+});
+
 describe('drawtextFilter', () => {
   it('burns the caption via fontfile + textfile', () => {
     const filter = drawtextFilter({ text: 'WOW' }, FONT, TEXT)!;
@@ -233,6 +258,22 @@ describe('buildFilterSpec', () => {
     expect(vf(spec)).not.toContain('drawtext');
     // never falls back to slicing the middle of the frame, which is the divider
     expect(vf(spec)).not.toContain('force_original_aspect_ratio=increase');
+  });
+
+  it('speaker layout crops the active panel without drawing a static title', () => {
+    const spec = buildFilterSpec(
+      { text: 'WOW' },
+      FONT,
+      TEXT,
+      'speaker',
+      'center',
+      PANELS,
+      undefined,
+      [{ startSec: 0, endSec: 5, panel: 1 }],
+    );
+    expect(spec.kind).toBe('complex');
+    expect(vf(spec)).toContain('crop=600:448:634:74');
+    expect(vf(spec)).not.toContain('drawtext');
   });
 });
 
@@ -369,5 +410,27 @@ describe('FfmpegRenderer', () => {
           layout: 'stack',
         }),
     ).toThrow(/at least two panels/);
+  });
+
+  it('renders speaker layout using injected focus segments', async () => {
+    const outDir = await mkdtemp(join(tmpdir(), 'clipper-clips-'));
+    const runner = fakeRunner();
+    const renderer = new FfmpegRenderer({
+      runner,
+      ffmpeg: 'ffmpeg',
+      encoder: 'libx264',
+      fontFile: FONT,
+      outDir,
+      layout: 'speaker',
+      panels: PANELS,
+      speakerAnalyzer: vi.fn().mockResolvedValue([{ startSec: 0, endSec: 15, panel: 1 }]),
+    });
+    await renderer.render(source, candidate, { text: 'focus speaker' });
+
+    const [, args] = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0];
+    const line = (args as string[]).join(' ');
+    expect(line).toContain('-filter_complex');
+    expect(line).toContain('crop=600:448:634:74');
+    expect(line).toContain('-map [sp0] -map 0:a?');
   });
 });

@@ -25,7 +25,7 @@ export interface PanelRect {
   h: number;
 }
 
-export type LayoutMode = 'fill' | 'fit' | 'stack';
+export type LayoutMode = 'fill' | 'fit' | 'stack' | 'speaker';
 
 /**
  * Parse an `x,y,w,h` rect. Returns undefined for anything malformed so callers can
@@ -86,6 +86,13 @@ export function cropXExpr(cropX: string): string {
 export type FilterSpec =
   | { kind: 'vf'; filter: string }
   | { kind: 'complex'; graph: string; videoLabel: string };
+
+/** A time span, relative to the rendered clip start, focused on one source panel. */
+export interface SpeakerFocusSegment {
+  startSec: number;
+  endSec: number;
+  panel: number;
+}
 
 /** The `fill` chain: scale the whole frame up, then slice 9:16 out of it. */
 export function fillChain(cropX: string): string[] {
@@ -150,4 +157,52 @@ export function stackGraph(
 
   const filters = typeof postFilters === 'string' ? [postFilters] : postFilters;
   return appendPostFilters('padded', filters, steps);
+}
+
+/**
+ * Dynamic speaker-focus graph: split a clip into time ranges, crop the active panel for
+ * each range, scale it to 9:16, then concatenate the ranges back into one video stream.
+ *
+ * Detection lives outside this file; this function only turns a panel/time plan into a
+ * deterministic ffmpeg graph.
+ */
+export function speakerGraph(
+  panels: readonly PanelRect[],
+  focus: readonly SpeakerFocusSegment[],
+  postFilters: string | readonly string[] = [],
+): FilterSpec {
+  if (panels.length < 2) throw new Error('speaker layout needs at least two panels');
+  const usable = focus.filter((s) => s.endSec > s.startSec && panels[s.panel]);
+  const segments =
+    usable.length > 0
+      ? usable
+      : [{ startSec: 0, endSec: 999999, panel: 0 } satisfies SpeakerFocusSegment];
+
+  const steps: string[] = [];
+  const labels: string[] = [];
+  for (const [i, seg] of segments.entries()) {
+    const p = panels[seg.panel] ?? panels[0]!;
+    const label = `sp${i}`;
+    labels.push(label);
+    steps.push(
+      `[0:v]trim=start=${seg.startSec.toFixed(3)}:end=${seg.endSec.toFixed(3)},` +
+        `setpts=PTS-STARTPTS,` +
+        `crop=${p.w}:${p.h}:${p.x}:${p.y},` +
+        `scale=${OUT_W}:${OUT_H}:force_original_aspect_ratio=increase:force_divisible_by=2,` +
+        `crop=${OUT_W}:${OUT_H}[${label}]`,
+    );
+  }
+
+  let baseLabel: string;
+  if (labels.length === 1) {
+    baseLabel = labels[0]!;
+  } else {
+    baseLabel = 'focused';
+    steps.push(
+      `${labels.map((label) => `[${label}]`).join('')}concat=n=${labels.length}:v=1:a=0[${baseLabel}]`,
+    );
+  }
+
+  const filters = typeof postFilters === 'string' ? [postFilters] : postFilters;
+  return appendPostFilters(baseLabel, filters, steps);
 }

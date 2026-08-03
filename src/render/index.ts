@@ -17,12 +17,15 @@ import {
   fillChain,
   fitGraph,
   formatRect,
+  speakerGraph,
   stackGraph,
   stackMetrics,
   type FilterSpec,
   type LayoutMode,
   type PanelRect,
+  type SpeakerFocusSegment,
 } from './layout.js';
+import { analyzeSpeakerFocus, type SpeakerFocusAnalyzer } from './speaker.js';
 import {
   subtitlesFilter,
   subtitlesForCandidate,
@@ -102,10 +105,14 @@ export function buildFilterSpec(
   cropX: string,
   panels: readonly PanelRect[],
   subtitleFile?: string,
+  speakerFocus: readonly SpeakerFocusSegment[] = [],
 ): FilterSpec {
   const postFilters: string[] = [];
   if (subtitleFile) postFilters.push(subtitlesFilter(subtitleFile, fontFile));
 
+  if (layout === 'speaker') {
+    return speakerGraph(panels, speakerFocus, postFilters);
+  }
   if (layout === 'stack') {
     return stackGraph(panels, postFilters);
   }
@@ -172,6 +179,8 @@ export interface RendererOptions {
   outDir?: string;
   /** Synced subtitle burn-in style; falls back to config. */
   subtitles?: SubtitleStyle;
+  /** Active-speaker analyzer for CLIPPER_LAYOUT=speaker; injectable for tests. */
+  speakerAnalyzer?: SpeakerFocusAnalyzer;
 }
 
 export class FfmpegRenderer implements Renderer {
@@ -184,6 +193,7 @@ export class FfmpegRenderer implements Renderer {
   private readonly panels: readonly PanelRect[];
   private readonly outDirOverride?: string;
   private readonly subtitles: SubtitleStyle;
+  private readonly speakerAnalyzer: SpeakerFocusAnalyzer;
   private readonly log = createLogger('render');
 
   constructor(opts: RendererOptions = {}) {
@@ -197,12 +207,13 @@ export class FfmpegRenderer implements Renderer {
     this.panels = opts.panels ?? cfg.panels;
     this.outDirOverride = opts.outDir;
     this.subtitles = opts.subtitles ?? cfg.subtitles;
+    this.speakerAnalyzer = opts.speakerAnalyzer ?? analyzeSpeakerFocus;
     // Fail at construction, not mid-render: the factory builds the renderer before any
     // download starts, so a misconfigured layout surfaces in seconds rather than after
     // an hour of transcription.
-    if (this.layout === 'stack' && this.panels.length < 2) {
+    if ((this.layout === 'stack' || this.layout === 'speaker') && this.panels.length < 2) {
       throw new Error(
-        'CLIPPER_LAYOUT=stack needs at least two panels — set CLIPPER_PANELS to ' +
+        `CLIPPER_LAYOUT=${this.layout} needs at least two panels — set CLIPPER_PANELS to ` +
           'semicolon-separated "x,y,w,h" rects (e.g. "34,74,600,448;634,74,600,448")',
       );
     }
@@ -223,6 +234,16 @@ export class FfmpegRenderer implements Renderer {
     if (ass) {
       await writeFile(subtitleFile, ass, 'utf8');
     }
+    const speakerFocus =
+      this.layout === 'speaker'
+        ? await this.speakerAnalyzer(
+            source.localPath,
+            candidate.startSec,
+            candidate.endSec,
+            this.panels,
+            { ffmpeg: this.ffmpeg },
+          )
+        : [];
     const spec = buildFilterSpec(
       caption,
       this.fontFile,
@@ -231,6 +252,7 @@ export class FfmpegRenderer implements Renderer {
       this.cropX,
       this.panels,
       ass ? subtitleFile : undefined,
+      speakerFocus,
     );
     const args = buildRenderArgs(
       source.localPath,
@@ -241,7 +263,7 @@ export class FfmpegRenderer implements Renderer {
       output,
     );
     this.log.info(
-      { id: candidate.id, encoder: this.encoder, layout: this.layout },
+      { id: candidate.id, encoder: this.encoder, layout: this.layout, speakerFocus },
       'rendering clip',
     );
     await this.runner.run(this.ffmpeg, args);

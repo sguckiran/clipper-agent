@@ -120,10 +120,9 @@ const schema = z.object({
   // Reframing layout. 'fill' scales the whole frame and slices 9:16 out of it — right for
   // normal landscape footage. 'fit' preserves the full frame over a blurred 9:16
   // background — right for already-vertical/square/3:4 sources. 'stack' crops named panels
-  // out of the source and stacks them vertically — for screen recordings (e.g. a browser
-  // showing two webcams side by side), where the centre of the frame is a window divider,
-  // not the subject.
-  CLIPPER_LAYOUT: z.enum(['fill', 'fit', 'stack']).default('fill'),
+  // out of the source and stacks them vertically. 'speaker' crops one configured panel at
+  // a time based on local motion, useful for Omegle-style two-person webcam videos.
+  CLIPPER_LAYOUT: z.enum(['fill', 'fit', 'stack', 'speaker']).default('fill'),
   // Panels to stack, semicolon-separated "x,y,w,h" rects in SOURCE pixels, top to bottom.
   // Find them by extracting a frame and reading the coordinates off it:
   //   ffmpeg -ss 600 -i vod.mp4 -frames:v 1 frame.png
