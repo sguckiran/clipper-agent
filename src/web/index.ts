@@ -31,6 +31,7 @@ export interface WebClip {
   endSec: number;
   durationSec: number;
   caption: string;
+  descriptions?: Clip['caption']['descriptions'];
   renderedPath?: string;
   mediaUrl?: string;
   score: number;
@@ -107,6 +108,7 @@ function toWebClip(jobId: string, clip: Clip): WebClip {
     endSec: Number(clip.endSec.toFixed(1)),
     durationSec: Number(durationSec.toFixed(1)),
     caption: clip.caption.text,
+    descriptions: clip.caption.descriptions,
     renderedPath: clip.renderedPath,
     mediaUrl: clip.renderedPath
       ? `/api/jobs/${encodeURIComponent(jobId)}/clips/${encodeURIComponent(clip.candidateId)}/video`
@@ -264,10 +266,7 @@ function setSessionCookie(req: IncomingMessage, res: ServerResponse): void {
 }
 
 function clearSessionCookie(res: ServerResponse): void {
-  res.setHeader(
-    'set-cookie',
-    `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`,
-  );
+  res.setHeader('set-cookie', `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -334,7 +333,10 @@ async function runJob(job: WebJob): Promise<void> {
 }
 
 function enqueue(job: WebJob): void {
-  queue = queue.then(() => runJob(job), () => runJob(job));
+  queue = queue.then(
+    () => runJob(job),
+    () => runJob(job),
+  );
 }
 
 function findClip(job: WebJob, candidateId: string): WebClip | undefined {
@@ -358,7 +360,11 @@ async function serveClip(job: WebJob, candidateId: string, res: ServerResponse):
   createReadStream(clip.renderedPath).pipe(res);
 }
 
-async function handleApi(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<void> {
+async function handleApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+): Promise<void> {
   if (req.method === 'GET' && pathname === '/api/jobs') {
     json(res, 200, { jobs: [...jobs.values()].map(publicJob).reverse() });
     return;
@@ -557,6 +563,8 @@ const html = String.raw`<!doctype html>
     .score { background: rgba(255,255,255,.055); border: 1px solid rgba(255,255,255,.07); border-radius: 14px; padding: 9px; color: var(--muted); font-size: 12px; }
     .score strong { display: block; color: #fff; font-size: 16px; }
     .caption { color: #fff; font-weight: 900; margin: 10px 0 5px; letter-spacing: -.01em; }
+    .description { margin-top: 10px; padding: 10px; border-radius: 14px; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.07); color: #dfe6f8; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .description strong { display: block; color: var(--yellow); font-size: 11px; text-transform: uppercase; margin-bottom: 4px; }
     .meta { font-size: 13px; color: var(--muted); }
     .path { font-size: 12px; color: #7f8aa3; overflow-wrap: anywhere; margin-top: 8px; }
     .hidden { display: none; }
@@ -681,6 +689,23 @@ const html = String.raw`<!doctype html>
         const cap = document.createElement('div');
         cap.className = 'caption';
         cap.textContent = clip.caption || clip.reason || clip.kind || 'Untitled clip';
+        const descriptions = document.createElement('div');
+        if (clip.descriptions?.tiktok) {
+          const tiktok = document.createElement('div');
+          tiktok.className = 'description';
+          const label = document.createElement('strong');
+          label.textContent = 'TikTok description';
+          tiktok.append(label, clip.descriptions.tiktok);
+          descriptions.append(tiktok);
+        }
+        if (clip.descriptions?.instagram) {
+          const instagram = document.createElement('div');
+          instagram.className = 'description';
+          const label = document.createElement('strong');
+          label.textContent = 'Instagram description';
+          instagram.append(label, clip.descriptions.instagram);
+          descriptions.append(instagram);
+        }
       const meta = document.createElement('div');
       meta.className = 'meta';
       meta.textContent =
@@ -688,7 +713,7 @@ const html = String.raw`<!doctype html>
         const path = document.createElement('div');
         path.className = 'path';
         path.textContent = clip.renderedPath || '';
-        body.append(top, meter, scores, cap, meta, path);
+        body.append(top, meter, scores, cap, descriptions, meta, path);
         card.append(video, body);
         clips.append(card);
       });

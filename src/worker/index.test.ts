@@ -199,6 +199,41 @@ describe('Worker', () => {
     expect(publisher.publishFile).toHaveBeenCalledWith('C:\\clips\\one.mp4', 'caption', ['tiktok']);
     expect(await q.list('done')).toHaveLength(1);
   });
+
+  it('uses platform descriptions when enqueueing publish jobs', async () => {
+    const q = new InMemoryQueue();
+    await enqueueClipJob(q, 'https://twitch.tv/x');
+    const pipeline: SourcePipeline = {
+      run: vi.fn().mockResolvedValue({
+        ...resultWithClip,
+        clips: [
+          {
+            ...resultWithClip.clips[0]!,
+            caption: {
+              text: 'title card',
+              descriptions: {
+                tiktok: 'tiktok description #fyp',
+                instagram: 'instagram description #reels',
+              },
+            },
+          },
+        ],
+      }),
+    };
+    const worker = new Worker(q, pipeline, {
+      publishEnabled: true,
+      publishMinQuality: 80,
+      publishPlatforms: ['tiktok', 'instagram'],
+    });
+
+    await worker.tick();
+
+    const publishJobs = (await q.list()).filter((job) => job.type === PUBLISH_JOB_TYPE);
+    expect(publishJobs.map((job) => (job.payload as { caption: string }).caption)).toEqual([
+      'tiktok description #fyp',
+      'instagram description #reels',
+    ]);
+  });
 });
 
 describe('clipQuality', () => {

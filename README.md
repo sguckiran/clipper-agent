@@ -3,8 +3,9 @@
 Autonomously turns long-form livestream VODs into short, captioned, vertical clips.
 
 Give it a source URL (Twitch / YouTube / Kick VOD) and it downloads the video,
-transcribes it, finds the most clip-worthy moments, writes a punchy caption for each,
-and renders a vertical 9:16 clip ready for TikTok / Reels / Shorts. It runs one-shot
+transcribes it, finds the most clip-worthy moments, writes a punchy on-screen title plus
+TikTok/Instagram descriptions with hashtags, and renders a vertical 9:16 clip ready for
+TikTok / Reels / Shorts. It runs one-shot
 from the CLI, as a queue worker, or fully hands-off by polling channels for new VODs —
 which makes it well suited to running 24/7 on a VM (see
 [Running on a VM](#running-on-a-vm-247-automated)).
@@ -198,6 +199,12 @@ independently.
 TikTok/Instagram publishing uses the browser-session bridge ported from the brainrot
 engine: you manually log in once per platform, then the worker reuses that persistent
 Chromium profile to upload clips.
+
+Each rendered clip carries two text layers:
+
+- `caption.text`: short on-screen title burned into the clip.
+- `caption.descriptions.tiktok` / `.instagram`: upload description with a short hook line
+  and 4-8 relevant hashtags.
 
 ```bash
 # one-time per server/account

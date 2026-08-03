@@ -4,9 +4,11 @@ import type { ChatClient } from '../llm/groq.js';
 import {
   CAPTION_SYSTEM,
   captionInput,
+  fallbackDescriptions,
   fallbackCaption,
   LlmCaptionWriter,
   parseCaption,
+  parseCaptionPayload,
 } from './caption.js';
 
 const candidate: ClipCandidate = {
@@ -28,6 +30,20 @@ describe('parseCaption', () => {
   });
 });
 
+describe('parseCaptionPayload', () => {
+  it('extracts platform descriptions with hashtags', () => {
+    expect(
+      parseCaptionPayload(
+        '{"caption":"Title","tiktok":"watch this\\n\\n#fyp #viral","instagram":"watch this too\\n\\n#reels #streamer"}',
+      ),
+    ).toEqual({
+      caption: 'Title',
+      tiktok: 'watch this\n\n#fyp #viral',
+      instagram: 'watch this too\n\n#reels #streamer',
+    });
+  });
+});
+
 describe('fallbackCaption', () => {
   it('uses the opening words, never the punchline', () => {
     // The caption is a title that sets the clip up, so echoing the payoff is worse than a
@@ -41,6 +57,20 @@ describe('fallbackCaption', () => {
   });
 });
 
+describe('fallbackDescriptions', () => {
+  it('writes TikTok and Instagram descriptions with useful hashtags', () => {
+    const descriptions = fallbackDescriptions({
+      ...candidate,
+      kind: 'reaction',
+      renderLayout: 'stack',
+    });
+    expect(descriptions?.tiktok).toMatch(/#fyp/);
+    expect(descriptions?.tiktok).toMatch(/#viral/);
+    expect(descriptions?.tiktok).toMatch(/#omegle/);
+    expect(descriptions?.instagram).toMatch(/#streamer/);
+  });
+});
+
 describe('captionInput', () => {
   it('marks the punchline as the thing not to give away', () => {
     const out = captionInput({ ...candidate, quote: 'raw, shell and all' });
@@ -48,7 +78,9 @@ describe('captionInput', () => {
     expect(out).toMatch(/do NOT give it away: raw, shell and all/);
   });
   it('sends the transcript alone when there is no punchline', () => {
-    expect(captionInput(candidate)).toBe(`Transcript: ${candidate.transcriptText}`);
+    expect(captionInput(candidate)).toContain(`Transcript: ${candidate.transcriptText}`);
+    expect(captionInput(candidate)).toContain('Score: 80');
+    expect(captionInput(candidate)).toContain('Reason: big reaction');
   });
 });
 
@@ -58,17 +90,38 @@ describe('CAPTION_SYSTEM', () => {
     // premise. Quoting the payoff instead produced useless fragments.
     expect(CAPTION_SYSTEM).toMatch(/Write a PREMISE, not a punchline/);
     expect(CAPTION_SYSTEM).toMatch(/never state the outcome/);
-    expect(CAPTION_SYSTEM).toMatch(/Krimoe plan to go international/);
+    expect(CAPTION_SYSTEM).toMatch(/hashtags/i);
+    expect(CAPTION_SYSTEM).toMatch(/#fyp/);
   });
 });
 
 describe('LlmCaptionWriter', () => {
   it('returns the model caption', async () => {
     const chat: ChatClient = {
+      complete: vi
+        .fn()
+        .mockResolvedValue(
+          '{"caption":"He did NOT just say that","tiktok":"this got wild\\n\\n#fyp #viral #streamer","instagram":"this got wild\\n\\n#reels #streamer"}',
+        ),
+    };
+    const writer = new LlmCaptionWriter({ chat, model: 'tiny' });
+    expect(await writer.write(candidate)).toEqual({
+      text: 'He did NOT just say that',
+      descriptions: {
+        tiktok: 'this got wild\n\n#fyp #viral #streamer',
+        instagram: 'this got wild\n\n#reels #streamer',
+      },
+    });
+  });
+
+  it('fills missing platform descriptions with hashtag fallbacks', async () => {
+    const chat: ChatClient = {
       complete: vi.fn().mockResolvedValue('{"caption":"He did NOT just say that"}'),
     };
     const writer = new LlmCaptionWriter({ chat, model: 'tiny' });
-    expect(await writer.write(candidate)).toEqual({ text: 'He did NOT just say that' });
+    const result = await writer.write(candidate);
+    expect(result.descriptions?.tiktok).toMatch(/#fyp/);
+    expect(result.descriptions?.instagram).toMatch(/#viral/);
   });
 
   it('falls back when the model call fails', async () => {
@@ -76,7 +129,9 @@ describe('LlmCaptionWriter', () => {
       complete: vi.fn().mockRejectedValue(new Error('down')),
     };
     const writer = new LlmCaptionWriter({ chat, model: 'tiny' });
-    expect((await writer.write(candidate)).text).toBe(fallbackCaption(candidate));
+    const result = await writer.write(candidate);
+    expect(result.text).toBe(fallbackCaption(candidate));
+    expect(result.descriptions?.tiktok).toMatch(/#fyp/);
   });
 
   it('falls back on an empty caption', async () => {

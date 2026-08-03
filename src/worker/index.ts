@@ -166,7 +166,7 @@ export class Worker {
       for (const platform of this.publishPlatforms) {
         await enqueuePublishJob(this.queue, {
           mediaPath,
-          caption: clip.caption.text,
+          caption: clip.caption.descriptions?.[platform] ?? clip.caption.text,
           platform,
           clipId: clip.id,
           sourceId: clip.sourceId,

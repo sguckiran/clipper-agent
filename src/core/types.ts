@@ -115,6 +115,8 @@ export interface ClipCandidate {
 export interface Caption {
   /** The on-screen caption text. */
   text: string;
+  /** Platform post descriptions/captions used when uploading the rendered clip. */
+  descriptions?: Partial<Record<Extract<PublishTarget, 'tiktok' | 'instagram'>, string>>;
   /** Optional style hint for the renderer (font, placement, etc.). */
   style?: CaptionStyle;
 }
