@@ -53,9 +53,11 @@ export const DEFAULT_AXIS_POLICY: Record<SkillAxis, AxisPolicy> = {
  *     do not get rendered.
  * v5: adds a transcript-only visual layout hint so Omegle/OmeTV clips can be rendered as
  *     stacked two-panel clips while non-Omegle clips keep the normal layout.
+ * v6: explicitly rejects intros, stream-starting admin, and music/lyrics/performance
+ *     segments unless the clip-worthy material is the spoken exchange around them.
  */
 export const SKILL_NAME = 'clip-skill';
-export const SKILL_VERSION = 'v5';
+export const SKILL_VERSION = 'v6';
 
 /**
  * The bundled skill text. Seeded to disk on first run; edit the on-disk copy to tune.
@@ -175,8 +177,14 @@ by being rude, loud or visually busy.
 ## What kills a clip
 
 Score all four axes low for: stream admin, sponsor reads, reading donations or chat,
-greetings, sign-offs, gameplay callouts ("reload", "heal me", "gg"), technical chat about
+greetings, sign-offs, "we're live" / stream-starting intros, waiting for viewers, setting
+up the next call, gameplay callouts ("reload", "heal me", "gg"), technical chat about
 the stream, and anything where nothing is actually said.
+
+Also score all four axes low for music, rap lyrics, singing, freestyling, background audio,
+and performance/intro segments where the transcript is mainly lyrical lines rather than a
+spoken exchange. A clever lyric is not a clip. Only rate it highly if the clip-worthy part
+is the streamer or guest reacting to the music in a funny, coherent conversation.
 
 **This is about empty content, not incomplete sentences.** A snippet that begins mid-sentence
 but lands inside a real exchange is fine — see the HOOK axis, where that is a positive. What
@@ -239,5 +247,6 @@ when the transcript strongly indicates a two-person stranger video call.
   sudden escalation, the moment a conversation turns, *and* krimoe's own bits, schemes and
   riffs. Do not favour one side over the other; rate whatever is actually good. What is
   reliably filler is him narrating between calls ("next", "let's find someone else") and
-  anything about the stream itself.
+  anything about the stream itself. Stream intros and music/lyrics at the start of a VOD are
+  filler even when the words look poetic or quotable in transcript form.
 `;

@@ -164,6 +164,12 @@ describe('CLIP_SKILL_MD', () => {
   it('has a streamer notes section for per-channel tuning', () => {
     expect(CLIP_SKILL_MD).toMatch(/## Streamer notes/);
   });
+
+  it('rejects intros and music lyrics as filler', () => {
+    expect(CLIP_SKILL_MD).toMatch(/stream-starting intros/i);
+    expect(CLIP_SKILL_MD).toMatch(/music, rap lyrics, singing/i);
+    expect(CLIP_SKILL_MD).toMatch(/A clever lyric is not a clip/i);
+  });
 });
 
 describe('promptStoreSkillLoader', () => {
