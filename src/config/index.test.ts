@@ -43,6 +43,10 @@ const MANAGED_KEYS = [
   'CLIPPER_LAYOUT',
   'CLIPPER_MONITOR_CHANNELS',
   'CLIPPER_MONITOR_INTERVAL_SEC',
+  'CLIPPER_WEB_PASSWORD',
+  'CLIPPER_WEB_PASSWORD_HASH',
+  'CLIPPER_WEB_SESSION_SECRET',
+  'CLIPPER_WEB_COOKIE_SECURE',
 ];
 
 describe('config', () => {
@@ -104,6 +108,10 @@ describe('config', () => {
       minCueDurationSec: 0.45,
       uppercase: true,
     });
+    expect(cfg.web).toMatchObject({
+      cookieSecure: false,
+    });
+    expect(cfg.web.password).toBeUndefined();
   });
 
   it('parses prescreen word overrides and the unpostable flag', () => {
@@ -196,6 +204,18 @@ describe('config', () => {
     process.env.CLIPPER_MONITOR_CHANNELS = ' https://a.tv/x , , https://b.tv/y ';
     resetConfigCache();
     expect(getConfig().monitor.channels).toEqual(['https://a.tv/x', 'https://b.tv/y']);
+  });
+
+  it('parses web auth settings', () => {
+    process.env.CLIPPER_WEB_PASSWORD_HASH = 'scrypt:v1:salt:hash';
+    process.env.CLIPPER_WEB_SESSION_SECRET = 'secret';
+    process.env.CLIPPER_WEB_COOKIE_SECURE = 'true';
+    resetConfigCache();
+    expect(getConfig().web).toMatchObject({
+      passwordHash: 'scrypt:v1:salt:hash',
+      sessionSecret: 'secret',
+      cookieSecure: true,
+    });
   });
 
   it('defaults monitor channels to an empty list', () => {

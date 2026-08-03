@@ -160,6 +160,15 @@ const schema = z.object({
 
   // Runtime
   CLIPPER_DATA_DIR: z.string().optional(),
+  // Web UI auth. Leave password/hash empty for local unauthenticated dev. For a public
+  // deployment, prefer CLIPPER_WEB_PASSWORD_HASH and serve only behind HTTPS.
+  CLIPPER_WEB_PASSWORD: z.string().optional(),
+  CLIPPER_WEB_PASSWORD_HASH: z.string().optional(),
+  CLIPPER_WEB_SESSION_SECRET: z.string().optional(),
+  CLIPPER_WEB_COOKIE_SECURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
   LOG_FORMAT: z.enum(['pretty', 'json']).default('pretty'),
 });
@@ -257,6 +266,12 @@ export interface Config {
     dataDir?: string;
     logLevel: RawConfig['LOG_LEVEL'];
     logFormat: RawConfig['LOG_FORMAT'];
+  };
+  web: {
+    password?: string;
+    passwordHash?: string;
+    sessionSecret?: string;
+    cookieSecure: boolean;
   };
 }
 
@@ -416,6 +431,12 @@ export function getConfig(): Config {
       dataDir: env.CLIPPER_DATA_DIR,
       logLevel: env.LOG_LEVEL,
       logFormat: env.LOG_FORMAT,
+    },
+    web: {
+      password: env.CLIPPER_WEB_PASSWORD,
+      passwordHash: env.CLIPPER_WEB_PASSWORD_HASH,
+      sessionSecret: env.CLIPPER_WEB_SESSION_SECRET,
+      cookieSecure: env.CLIPPER_WEB_COOKIE_SECURE,
     },
   };
   return cached;

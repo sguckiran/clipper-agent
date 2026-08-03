@@ -26,7 +26,7 @@ import { ChannelMonitor, YtDlpChannelLister, defaultSeenStore } from '../monitor
 import { createDefaultPipeline } from '../pipeline/factory.js';
 import { FilesystemPromptStore } from '../prompts/index.js';
 import { qaTarget } from '../review/index.js';
-import { startWebServer } from '../web/index.js';
+import { hashPassword, startWebServer } from '../web/index.js';
 import { enqueueClipJob, Worker } from '../worker/index.js';
 
 const log = createLogger('cli');
@@ -259,6 +259,16 @@ async function prompts(args: string[]): Promise<number> {
   return 0;
 }
 
+async function hashWebPassword(args: string[]): Promise<number> {
+  const password = firstPositional(args);
+  if (!password) {
+    log.error('usage: clipper hash-password <password>');
+    return 1;
+  }
+  console.log(hashPassword(password));
+  return 0;
+}
+
 function printHelp(): void {
   console.log(
     [
@@ -275,6 +285,7 @@ function printHelp(): void {
       '  queue [status] List queued jobs (pending|running|done|failed)',
       '  qa <file|dir> Review rendered clips: metadata checks + contact sheets',
       '  prompts       List prompts (or: prompts show <name> [version])',
+      '  hash-password <password> Generate CLIPPER_WEB_PASSWORD_HASH for the web UI',
       '  doctor        Check environment (binaries, config, paths)',
       '  help          Show this help',
     ].join('\n'),
@@ -312,6 +323,9 @@ async function main(): Promise<void> {
       break;
     case 'prompts':
       process.exitCode = await prompts(rest);
+      break;
+    case 'hash-password':
+      process.exitCode = await hashWebPassword(rest);
       break;
     case undefined:
     case 'help':

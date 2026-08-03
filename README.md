@@ -138,6 +138,23 @@ quality = min(overall virality score, funny, hook, coherence)
 That makes it an AND gate: a clip that is funny but incoherent, or coherent but not funny, is
 ranked low instead of being rescued by an average.
 
+For a public link, enable the password wall:
+
+```bash
+node dist/cli/index.js hash-password "use-a-long-random-password"
+```
+
+Then set these on the server:
+
+```env
+CLIPPER_WEB_PASSWORD_HASH=<output from hash-password>
+CLIPPER_WEB_SESSION_SECRET=<another long random secret>
+CLIPPER_WEB_COOKIE_SECURE=true
+```
+
+Serve the app behind HTTPS. The login session cookie is encrypted, `HttpOnly`, and
+`SameSite=Lax`; HTTPS is what encrypts the password while it travels over the network.
+
 ### 2. One-shot
 
 Clip a single source right now and print the resulting clip paths. Accepts a URL **or a
@@ -226,6 +243,8 @@ see `.env.example` for the full list. Key options:
 | `CLIPPER_LLM_SCORE_BUDGET`                             | `400`                     | Max windows rated per source; raise for recall, lower to cut spend          |
 | `CLIPPER_LLM_SCORE_BATCH`                              | `12`                      | Snippets per rating request                                                 |
 | `CLIPPER_SCORE_STRIDE_SEC`                             | `15`                      | Min gap between rated windows (drops near-duplicates)                       |
+| `CLIPPER_WEB_PASSWORD_HASH`                            | —                         | Enables the web password wall using a scrypt hash                           |
+| `CLIPPER_WEB_COOKIE_SECURE`                            | `false`                   | Set `true` when the web UI is behind HTTPS                                  |
 | `CLIPPER_SPICE_WORDS` / `CLIPPER_FILLER_WORDS`         | — / —                     | Per-streamer prescreen terms to favour / penalise                           |
 | `CLIPPER_DROP_UNPOSTABLE`                              | `false`                   | Drop clips the rater flags as account-ban risk (slurs, threats)             |
 | `CLIPPER_AXIS_{HOOK,FUNNY,POCKET,COHERENCE}_WEIGHT`    | `0.3` / `0.3` / `0.2` / `0.2` | Share of the content score per skill axis                               |
@@ -237,7 +256,7 @@ see `.env.example` for the full list. Key options:
 | `CLIPPER_SUBTITLE_ACCENT_COLOR`                        | `#FFE600`                 | Highlight colour for the emphasized word in each subtitle cue               |
 | `CLIPPER_SUBTITLE_MARGIN_V`                            | `610`                     | Vertical subtitle placement from the bottom of the 1080x1920 frame          |
 | `CLIPPER_SUBTITLE_MAX_WORDS`                           | `3`                       | Max words per synced subtitle cue                                           |
-| `CLIPPER_LAYOUT`                                       | `fill`                    | `fill`, `fit`, `stack`, or `auto` (`auto` stacks Groq-marked Omegle clips)   |
+| `CLIPPER_LAYOUT`                                       | `fill`                    | `fill`, `fit`, `stack`, or `auto` (`auto` stacks rater-marked Omegle clips)  |
 | `CLIPPER_PANELS`                                       | —                         | `stack`/`auto` panels: `x,y,w,h` rects, semicolon-separated                 |
 | `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
 | `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                 | Channels to poll + interval                                                 |
