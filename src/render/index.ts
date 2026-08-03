@@ -252,6 +252,7 @@ export class FfmpegRenderer implements Renderer {
       startSec: candidate.startSec,
       endSec: candidate.endSec,
       caption,
+      candidate,
       renderedPath: output,
       status: 'rendered',
     };

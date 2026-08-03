@@ -8,6 +8,7 @@
  *   add      enqueue a source URL for the worker
  *   work     run the queue worker (processes enqueued sources)
  *   monitor  poll configured channels and auto-enqueue new VODs
+ *   web      run a small local browser UI
  *   queue    list queued jobs
  *   prompts  inspect the prompt store
  */
@@ -25,6 +26,7 @@ import { ChannelMonitor, YtDlpChannelLister, defaultSeenStore } from '../monitor
 import { createDefaultPipeline } from '../pipeline/factory.js';
 import { FilesystemPromptStore } from '../prompts/index.js';
 import { qaTarget } from '../review/index.js';
+import { startWebServer } from '../web/index.js';
 import { enqueueClipJob, Worker } from '../worker/index.js';
 
 const log = createLogger('cli');
@@ -166,6 +168,14 @@ async function monitor(): Promise<number> {
   return 0;
 }
 
+async function web(): Promise<number> {
+  startWebServer();
+  await new Promise(() => {
+    // Keep the process alive until Ctrl+C.
+  });
+  return 0;
+}
+
 async function queue(args: string[]): Promise<number> {
   const status = firstPositional(args) as Parameters<FileJobQueue['list']>[0];
   const jobs = await new FileJobQueue().list(status);
@@ -257,6 +267,7 @@ function printHelp(): void {
       '  add <url>     Enqueue a source URL for the worker',
       '  work          Run the queue worker',
       '  monitor       Poll configured channels and auto-enqueue new VODs',
+      '  web           Run the local browser UI (http://localhost:3333)',
       '  queue [status] List queued jobs (pending|running|done|failed)',
       '  qa <file|dir> Review rendered clips: metadata checks + contact sheets',
       '  prompts       List prompts (or: prompts show <name> [version])',
@@ -285,6 +296,9 @@ async function main(): Promise<void> {
       break;
     case 'monitor':
       process.exitCode = await monitor();
+      break;
+    case 'web':
+      process.exitCode = await web();
       break;
     case 'queue':
       process.exitCode = await queue(rest);

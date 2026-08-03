@@ -100,7 +100,7 @@ export interface ClipCandidate {
   quote?: string;
   /** The verbatim line the clip should open on, per the rater. */
   hookQuote?: string;
-  /** Skill axis scores, 0–100 each: is it funny, does it hook, is it out of pocket. */
+  /** Skill axis scores, 0–100 each: funny, hook, out-of-pocket, standalone coherence. */
   funny?: number;
   hook?: number;
   pocket?: number;
@@ -143,6 +143,8 @@ export interface Clip {
   startSec: number;
   endSec: number;
   caption: Caption;
+  /** Original scored candidate metadata, kept for review UIs and ranking. */
+  candidate?: ClipCandidate;
   /** Absolute path to the rendered vertical clip, once produced. */
   renderedPath?: string;
   status: ClipStatus;

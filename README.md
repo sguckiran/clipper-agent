@@ -117,7 +117,28 @@ OS-appropriate data directory — `doctor` prints the path. Override it with `CL
 
 There are four useful CLI flows, from manual clipping to fully automated monitoring and review.
 
-### 1. One-shot
+### 1. Local web UI
+
+Run a small browser UI, paste a Kick/Twitch/YouTube URL, and let the pipeline render and rank
+clips:
+
+```bash
+pnpm web
+# or after build:
+node dist/cli/index.js web
+```
+
+Open `http://localhost:3333`. The UI defaults to `30` max clips so a full YouTube video is not
+artificially capped at three. Results are ranked by one strict quality meter:
+
+```
+quality = min(overall virality score, funny, hook, coherence)
+```
+
+That makes it an AND gate: a clip that is funny but incoherent, or coherent but not funny, is
+ranked low instead of being rescued by an average.
+
+### 2. One-shot
 
 Clip a single source right now and print the resulting clip paths. Accepts a URL **or a
 local video file** (a local path skips the download entirely):
@@ -127,7 +148,7 @@ clipper run <url> [--limit N] [--min-score N]
 clipper run ./some-vod.mp4 --limit 10          # clip a file already on disk
 ```
 
-### 2. Queue + worker
+### 3. Queue + worker
 
 Decouple "what to clip" from "do the work". Enqueue sources (from anywhere — a script, a
 cron job, by hand), and run a worker that drains the queue with retries. The queue is
@@ -139,7 +160,7 @@ clipper work                                    # process jobs until stopped
 clipper queue [pending|running|done|failed]     # inspect the queue
 ```
 
-### 3. Autonomous (monitor + worker)
+### 4. Autonomous (monitor + worker)
 
 Point it at channels and it clips every new VOD on its own. `monitor` polls the configured
 channels on an interval and enqueues anything it hasn't seen; `work` renders them. This is
@@ -154,7 +175,7 @@ clipper work      # process the queue (long-running)
 `monitor` and `work` are separate long-running processes so you can scale/restart them
 independently.
 
-### 4. Review rendered clips
+### 5. Review rendered clips
 
 Generate a contact sheet and JSON QA report for a rendered clip or a directory of clips:
 
