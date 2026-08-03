@@ -2,7 +2,15 @@ import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { Job, JobQueue, JobStatus } from '../core/queue.js';
 import type { PipelineResult } from '../pipeline/index.js';
-import { enqueueClipJob, Worker, type SourcePipeline } from './index.js';
+import {
+  clipQuality,
+  enqueueClipJob,
+  enqueuePublishJob,
+  PUBLISH_JOB_TYPE,
+  Worker,
+  type ClipPublisher,
+  type SourcePipeline,
+} from './index.js';
 
 /** Minimal in-memory JobQueue for worker tests. */
 class InMemoryQueue implements JobQueue {
@@ -62,12 +70,58 @@ const okResult: PipelineResult = {
   clips: [],
 };
 
+const resultWithClip: PipelineResult = {
+  ...okResult,
+  clips: [
+    {
+      id: 'clip-1',
+      candidateId: 'cand-1',
+      sourceId: 'src',
+      startSec: 10,
+      endSec: 40,
+      caption: { text: 'caption' },
+      renderedPath: 'C:\\clips\\one.mp4',
+      status: 'rendered',
+      candidate: {
+        id: 'cand-1',
+        sourceId: 'src',
+        startSec: 10,
+        endSec: 40,
+        score: 90,
+        funny: 88,
+        hook: 85,
+        pocket: 80,
+        coherence: 92,
+        reason: 'good',
+        transcriptText: 'funny coherent clip',
+      },
+    },
+  ],
+};
+
 describe('enqueueClipJob', () => {
   it('enqueues a clip job with the url payload', async () => {
     const q = new InMemoryQueue();
     const job = await enqueueClipJob(q, 'https://twitch.tv/x');
     expect(job.type).toBe('clip');
     expect(job.payload).toEqual({ url: 'https://twitch.tv/x' });
+  });
+});
+
+describe('enqueuePublishJob', () => {
+  it('does not enqueue duplicate active publish jobs for the same file and platform', async () => {
+    const q = new InMemoryQueue();
+    await enqueuePublishJob(q, {
+      mediaPath: 'C:\\clips\\one.mp4',
+      caption: 'caption',
+      platform: 'tiktok',
+    });
+    await enqueuePublishJob(q, {
+      mediaPath: 'C:\\clips\\one.mp4',
+      caption: 'caption',
+      platform: 'tiktok',
+    });
+    expect(await q.list()).toHaveLength(1);
   });
 });
 
@@ -110,5 +164,45 @@ describe('Worker', () => {
     await enqueueClipJob(q, 'b');
     const worker = new Worker(q, { run: vi.fn().mockResolvedValue(okResult) });
     expect(await worker.drain()).toBe(2);
+  });
+
+  it('enqueues publish jobs after a successful clip job when publishing is enabled', async () => {
+    const q = new InMemoryQueue();
+    await enqueueClipJob(q, 'https://twitch.tv/x');
+    const pipeline: SourcePipeline = { run: vi.fn().mockResolvedValue(resultWithClip) };
+    const worker = new Worker(q, pipeline, {
+      publishEnabled: true,
+      publishMinQuality: 80,
+      publishPlatforms: ['tiktok', 'instagram'],
+    });
+
+    await worker.tick();
+
+    const jobs = await q.list();
+    expect(jobs.filter((job) => job.type === PUBLISH_JOB_TYPE)).toHaveLength(2);
+  });
+
+  it('processes publish jobs with the configured publisher', async () => {
+    const q = new InMemoryQueue();
+    await enqueuePublishJob(q, {
+      mediaPath: 'C:\\clips\\one.mp4',
+      caption: 'caption',
+      platform: 'tiktok',
+    });
+    const publisher: ClipPublisher = {
+      publishFile: vi.fn().mockResolvedValue({ ok: true, results: [] }),
+    };
+    const worker = new Worker(q, { run: vi.fn() }, { publisher });
+
+    await worker.tick();
+
+    expect(publisher.publishFile).toHaveBeenCalledWith('C:\\clips\\one.mp4', 'caption', ['tiktok']);
+    expect(await q.list('done')).toHaveLength(1);
+  });
+});
+
+describe('clipQuality', () => {
+  it('uses the weakest required axis as the final quality gate', () => {
+    expect(clipQuality(resultWithClip.clips[0]!)).toBe(85);
   });
 });

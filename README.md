@@ -63,11 +63,11 @@ the store picks the highest version automatically.
 
 A clip has to be four things at once, scored 0–100 each:
 
-| Axis     | Question                                      | Weight | Floor |
-| -------- | --------------------------------------------- | ------ | ----- |
-| `hook`      | Do the first seconds stop a scroll?                   | `0.30` | `40`  |
-| `funny`     | Is it actually funny (not just loud or rude)?         | `0.30` | `35`  |
-| `pocket`    | How out of pocket is it?                              | `0.20` | `30`  |
+| Axis        | Question                                                | Weight | Floor |
+| ----------- | ------------------------------------------------------- | ------ | ----- |
+| `hook`      | Do the first seconds stop a scroll?                     | `0.30` | `40`  |
+| `funny`     | Is it actually funny (not just loud or rude)?           | `0.30` | `35`  |
+| `pocket`    | How out of pocket is it?                                | `0.20` | `30`  |
 | `coherence` | Does it make sense without the missing previous minute? | `0.20` | `60`  |
 
 The **floors** matter more than the weights. A weighted average lets one strong axis carry a
@@ -115,7 +115,8 @@ OS-appropriate data directory — `doctor` prints the path. Override it with `CL
 
 ## Usage
 
-There are four useful CLI flows, from manual clipping to fully automated monitoring and review.
+There are six useful CLI flows, from manual clipping to fully automated monitoring, review,
+and optional browser-session publishing.
 
 ### 1. Local web UI
 
@@ -192,7 +193,32 @@ clipper work      # process the queue (long-running)
 `monitor` and `work` are separate long-running processes so you can scale/restart them
 independently.
 
-### 5. Review rendered clips
+### 5. Publish rendered clips
+
+TikTok/Instagram publishing uses the browser-session bridge ported from the brainrot
+engine: you manually log in once per platform, then the worker reuses that persistent
+Chromium profile to upload clips.
+
+```bash
+# one-time per server/account
+python -m pip install playwright
+python -m playwright install chromium
+clipper login tiktok
+clipper login instagram
+
+# publish one file manually
+clipper publish ./clips/example.mp4 --caption "caption text" --platforms tiktok,instagram
+
+# or let the worker enqueue publish jobs after rendering high-quality clips
+CLIPPER_PUBLISH_ENABLED=true
+CLIPPER_PUBLISH_MIN_QUALITY=75
+clipper work
+```
+
+Publish jobs are separate queue items. If the process dies mid-post, that publish job stays
+`running` instead of being blindly retried, which avoids duplicate posts.
+
+### 6. Review rendered clips
 
 Generate a contact sheet and JSON QA report for a rendered clip or a directory of clips:
 
@@ -228,40 +254,45 @@ is short-lived, Kick downloads must complete promptly (fine for typical VOD leng
 All config is loaded from `.env` and validated in [`src/config/index.ts`](src/config/index.ts);
 see `.env.example` for the full list. Key options:
 
-| Env var                                                | Default                   | Purpose                                                                     |
-| ------------------------------------------------------ | ------------------------- | --------------------------------------------------------------------------- |
-| `AI_PROVIDER`                                          | `auto`                    | `auto`, `openai`, or `groq`; auto prefers OpenAI when its key is present     |
-| `GPT_API_KEY` / `OPENAI_API_KEY`                       | —                         | OpenAI transcription + research + caption                                   |
-| `GROQ_API_KEY`                                         | —                         | Optional Groq fallback                                                       |
-| `CLIPPER_TRANSCRIBE_MODEL`                             | `whisper-1`               | OpenAI speech-to-text model with segment/word timestamps                     |
-| `CLIPPER_RESEARCH_MODEL` / `CLIPPER_CAPTION_MODEL`     | `gpt-5.6-luna`            | OpenAI model for scoring/captions                                            |
-| `CLIPPER_CLIP_MIN_SEC` / `_MAX_SEC` / `_TARGET_SEC`    | `15` / `60` / `30`        | Clip length bounds + target (sentence-aligned)                              |
-| `CLIPPER_MIN_WORDS_PER_SEC`                            | `0.8`                     | Speech gate (drops applause/music)                                          |
-| `CLIPPER_SCORE_TRANSCRIPT_WEIGHT` / `_LOUDNESS_WEIGHT` | `0.8` / `0.2`             | Score blend; content-dominant by design                                     |
-| `CLIPPER_MIN_SCORE`                                    | `55`                      | Threshold for a candidate                                                   |
-| `CLIPPER_MAX_CANDIDATES`                               | `10`                      | Cap per source                                                              |
-| `CLIPPER_LLM_SCORE_BUDGET`                             | `400`                     | Max windows rated per source; raise for recall, lower to cut spend          |
-| `CLIPPER_LLM_SCORE_BATCH`                              | `12`                      | Snippets per rating request                                                 |
-| `CLIPPER_SCORE_STRIDE_SEC`                             | `15`                      | Min gap between rated windows (drops near-duplicates)                       |
-| `CLIPPER_WEB_PASSWORD_HASH`                            | —                         | Enables the web password wall using a scrypt hash                           |
-| `CLIPPER_WEB_COOKIE_SECURE`                            | `false`                   | Set `true` when the web UI is behind HTTPS                                  |
-| `CLIPPER_SPICE_WORDS` / `CLIPPER_FILLER_WORDS`         | — / —                     | Per-streamer prescreen terms to favour / penalise                           |
-| `CLIPPER_DROP_UNPOSTABLE`                              | `false`                   | Drop clips the rater flags as account-ban risk (slurs, threats)             |
-| `CLIPPER_AXIS_{HOOK,FUNNY,POCKET,COHERENCE}_WEIGHT`    | `0.3` / `0.3` / `0.2` / `0.2` | Share of the content score per skill axis                               |
-| `CLIPPER_AXIS_{HOOK,FUNNY,POCKET,COHERENCE}_FLOOR`     | `40` / `35` / `30` / `60` | Below this an axis rejects the clip outright                                |
-| `CLIPPER_HOOK_LEAD_IN_SEC`                             | `1.5`                     | Lead-in kept before the hook line so it has context (`0` = hard cut)        |
-| `CLIPPER_SUBTITLES`                                    | `true`                    | Burn synced word-level subtitles when Whisper provides word timings         |
-| `CLIPPER_SUBTITLE_FONT_FAMILY`                         | `Arial`                   | ASS/libass subtitle font family name                                        |
-| `CLIPPER_SUBTITLE_FONT_SIZE`                           | `74`                      | Subtitle font size in output pixels                                         |
-| `CLIPPER_SUBTITLE_ACCENT_COLOR`                        | `#FFE600`                 | Highlight colour for the emphasized word in each subtitle cue               |
-| `CLIPPER_SUBTITLE_MARGIN_V`                            | `610`                     | Vertical subtitle placement from the bottom of the 1080x1920 frame          |
-| `CLIPPER_SUBTITLE_MAX_WORDS`                           | `3`                       | Max words per synced subtitle cue                                           |
-| `CLIPPER_LAYOUT`                                       | `fill`                    | `fill`, `fit`, `stack`, or `auto` (`auto` stacks rater-marked Omegle clips)  |
-| `CLIPPER_PANELS`                                       | —                         | `stack`/`auto` panels: `x,y,w,h` rects, semicolon-separated                 |
-| `CLIPPER_CROP_X`                                       | `center`                  | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
-| `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                 | Channels to poll + interval                                                 |
-| `CLIPPER_DATA_DIR`                                     | OS default                | Where downloads / clips / queue live                                        |
-| `LOG_FORMAT`                                           | `pretty`                  | Set to `json` for production/log aggregation                                |
+| Env var                                                | Default                       | Purpose                                                                     |
+| ------------------------------------------------------ | ----------------------------- | --------------------------------------------------------------------------- |
+| `AI_PROVIDER`                                          | `auto`                        | `auto`, `openai`, or `groq`; auto prefers OpenAI when its key is present    |
+| `GPT_API_KEY` / `OPENAI_API_KEY`                       | —                             | OpenAI transcription + research + caption                                   |
+| `GROQ_API_KEY`                                         | —                             | Optional Groq fallback                                                      |
+| `CLIPPER_TRANSCRIBE_MODEL`                             | `whisper-1`                   | OpenAI speech-to-text model with segment/word timestamps                    |
+| `CLIPPER_RESEARCH_MODEL` / `CLIPPER_CAPTION_MODEL`     | `gpt-5.6-luna`                | OpenAI model for scoring/captions                                           |
+| `CLIPPER_CLIP_MIN_SEC` / `_MAX_SEC` / `_TARGET_SEC`    | `15` / `60` / `30`            | Clip length bounds + target (sentence-aligned)                              |
+| `CLIPPER_MIN_WORDS_PER_SEC`                            | `0.8`                         | Speech gate (drops applause/music)                                          |
+| `CLIPPER_SCORE_TRANSCRIPT_WEIGHT` / `_LOUDNESS_WEIGHT` | `0.8` / `0.2`                 | Score blend; content-dominant by design                                     |
+| `CLIPPER_MIN_SCORE`                                    | `55`                          | Threshold for a candidate                                                   |
+| `CLIPPER_MAX_CANDIDATES`                               | `10`                          | Cap per source                                                              |
+| `CLIPPER_LLM_SCORE_BUDGET`                             | `400`                         | Max windows rated per source; raise for recall, lower to cut spend          |
+| `CLIPPER_LLM_SCORE_BATCH`                              | `12`                          | Snippets per rating request                                                 |
+| `CLIPPER_SCORE_STRIDE_SEC`                             | `15`                          | Min gap between rated windows (drops near-duplicates)                       |
+| `CLIPPER_WEB_PASSWORD_HASH`                            | —                             | Enables the web password wall using a scrypt hash                           |
+| `CLIPPER_WEB_COOKIE_SECURE`                            | `false`                       | Set `true` when the web UI is behind HTTPS                                  |
+| `CLIPPER_SPICE_WORDS` / `CLIPPER_FILLER_WORDS`         | — / —                         | Per-streamer prescreen terms to favour / penalise                           |
+| `CLIPPER_DROP_UNPOSTABLE`                              | `false`                       | Drop clips the rater flags as account-ban risk (slurs, threats)             |
+| `CLIPPER_AXIS_{HOOK,FUNNY,POCKET,COHERENCE}_WEIGHT`    | `0.3` / `0.3` / `0.2` / `0.2` | Share of the content score per skill axis                                   |
+| `CLIPPER_AXIS_{HOOK,FUNNY,POCKET,COHERENCE}_FLOOR`     | `40` / `35` / `30` / `60`     | Below this an axis rejects the clip outright                                |
+| `CLIPPER_HOOK_LEAD_IN_SEC`                             | `1.5`                         | Lead-in kept before the hook line so it has context (`0` = hard cut)        |
+| `CLIPPER_SUBTITLES`                                    | `true`                        | Burn synced word-level subtitles when Whisper provides word timings         |
+| `CLIPPER_SUBTITLE_FONT_FAMILY`                         | `Arial`                       | ASS/libass subtitle font family name                                        |
+| `CLIPPER_SUBTITLE_FONT_SIZE`                           | `74`                          | Subtitle font size in output pixels                                         |
+| `CLIPPER_SUBTITLE_ACCENT_COLOR`                        | `#FFE600`                     | Highlight colour for the emphasized word in each subtitle cue               |
+| `CLIPPER_SUBTITLE_MARGIN_V`                            | `610`                         | Vertical subtitle placement from the bottom of the 1080x1920 frame          |
+| `CLIPPER_SUBTITLE_MAX_WORDS`                           | `3`                           | Max words per synced subtitle cue                                           |
+| `CLIPPER_LAYOUT`                                       | `fill`                        | `fill`, `fit`, `stack`, or `auto` (`auto` stacks rater-marked Omegle clips) |
+| `CLIPPER_PANELS`                                       | —                             | `stack`/`auto` panels: `x,y,w,h` rects, semicolon-separated                 |
+| `CLIPPER_CROP_X`                                       | `center`                      | 9:16 crop focus: `center`/`left`/`right`/`0..1`                             |
+| `CLIPPER_MONITOR_CHANNELS` / `_INTERVAL_SEC`           | — / `900`                     | Channels to poll + interval                                                 |
+| `CLIPPER_PUBLISH_ENABLED`                              | `false`                       | Enqueue TikTok/Instagram publish jobs after rendering                       |
+| `CLIPPER_PUBLISH_PLATFORMS`                            | `tiktok,instagram`            | Browser publisher targets                                                   |
+| `CLIPPER_PUBLISH_MIN_QUALITY`                          | `75`                          | Minimum AND-gated clip quality before auto-publishing                       |
+| `CLIPPER_PUBLISH_PROFILE_DIR`                          | `<dataDir>/social_profiles`   | Persistent browser sessions for platform logins                             |
+| `CLIPPER_PUBLISH_BROWSER_EXECUTABLE`                   | —                             | Optional Chrome/Chromium binary path                                        |
+| `CLIPPER_DATA_DIR`                                     | OS default                    | Where downloads / clips / queue live                                        |
+| `LOG_FORMAT`                                           | `pretty`                      | Set to `json` for production/log aggregation                                |
 
 **Tuning:** clip quality is config, not a rebuild — adjust length (`CLIPPER_CLIP_*`),
 `CLIPPER_MIN_SCORE`, the transcript/loudness split, the prescreen word lists, or
@@ -294,6 +325,8 @@ sudo -u clipper git clone <your-repo-url> /opt/clipper-agent
 cd /opt/clipper-agent
 sudo -u clipper pnpm install --frozen-lockfile
 sudo -u clipper pnpm build
+sudo -u clipper python3 -m pip install playwright
+sudo -u clipper python3 -m playwright install chromium
 
 # configure
 sudo -u clipper cp .env.example .env
@@ -303,6 +336,17 @@ sudo -u clipper chmod 600 .env
 # sanity check
 sudo -u clipper node dist/cli/index.js doctor
 ```
+
+For auto-publishing, log in once per platform while you have a visible browser session
+available on the VPS:
+
+```bash
+sudo -u clipper node dist/cli/index.js login tiktok
+sudo -u clipper node dist/cli/index.js login instagram
+```
+
+On a headless VPS, run this through a desktop/noVNC session or SSH with X forwarding.
+After login, set `CLIPPER_PUBLISH_ENABLED=true` and restart `clipper-work`.
 
 **3. Create two systemd services**
 
@@ -345,7 +389,8 @@ journalctl -u clipper-work -u clipper-monitor -f
 ```
 
 From here it's hands-off: the monitor enqueues new VODs as they appear, the worker renders
-clips into the data dir, and both restart automatically after a crash or reboot.
+clips into the data dir, optionally enqueues publish jobs, and both services restart after
+a crash or reboot.
 
 **Updating a deployment**
 
@@ -372,9 +417,8 @@ offline. A live end-to-end run needs the binaries and a Groq key installed local
 
 ## Not yet implemented
 
-- **Publishing** (TikTok / Instagram / YouTube): the `Publisher` contract is defined but the
-  platform integrations are not built — the pipeline currently stops at rendered clips on disk.
-  Auto-publishing is the natural next step for a fully automated VM deployment.
+- **YouTube Shorts publishing**: TikTok/Instagram browser publishing exists; YouTube upload is
+  still not wired.
 - **Real-time (mid-stream) clipping**: the pipeline is VOD/batch-shaped; a "livestream" is
   handled by clipping its VOD.
 

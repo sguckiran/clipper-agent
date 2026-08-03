@@ -24,6 +24,7 @@ import { ffmpegBinary, platformInfo, preferredH264Encoder, ytDlpBinary } from '.
 import { FileJobQueue } from '../core/queue.js';
 import { ChannelMonitor, YtDlpChannelLister, defaultSeenStore } from '../monitor/index.js';
 import { createDefaultPipeline } from '../pipeline/factory.js';
+import { createBrowserPublisher, type BrowserPublishTarget } from '../publish/browser.js';
 import { FilesystemPromptStore } from '../prompts/index.js';
 import { qaTarget } from '../review/index.js';
 import { hashPassword, startWebServer } from '../web/index.js';
@@ -118,6 +119,16 @@ function firstPositional(args: string[]): string | undefined {
   return undefined;
 }
 
+function publishPlatformsFromArgs(args: string[]): BrowserPublishTarget[] | undefined {
+  const raw = flagString(args, '--platforms');
+  if (!raw) return undefined;
+  const platforms = raw
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter((s): s is BrowserPublishTarget => s === 'tiktok' || s === 'instagram');
+  return platforms.length > 0 ? platforms : undefined;
+}
+
 async function run(args: string[]): Promise<number> {
   const target = firstPositional(args);
   if (!target) {
@@ -152,7 +163,16 @@ async function add(args: string[]): Promise<number> {
 }
 
 async function work(): Promise<number> {
-  const worker = new Worker(new FileJobQueue(), createDefaultPipeline());
+  const cfg = getConfig();
+  const publishPlatforms = cfg.publish.platforms.filter(
+    (p): p is BrowserPublishTarget => p === 'tiktok' || p === 'instagram',
+  );
+  const worker = new Worker(new FileJobQueue(), createDefaultPipeline(), {
+    publishEnabled: cfg.publish.enabled,
+    publishMinQuality: cfg.publish.minQuality,
+    publishPlatforms: publishPlatforms.length > 0 ? publishPlatforms : ['tiktok', 'instagram'],
+    publisher: cfg.publish.enabled ? createBrowserPublisher() : undefined,
+  });
   await worker.runForever();
   return 0;
 }
@@ -169,6 +189,58 @@ async function monitor(): Promise<number> {
     seen: defaultSeenStore(),
   });
   await mon.runForever(cfg.monitor.channels, cfg.monitor.intervalSec * 1000);
+  return 0;
+}
+
+async function login(args: string[]): Promise<number> {
+  const platform = firstPositional(args);
+  if (platform !== 'tiktok' && platform !== 'instagram') {
+    log.error('usage: clipper login <tiktok|instagram>');
+    return 1;
+  }
+  const result = await createBrowserPublisher().login(platform);
+  if (!result.ok) {
+    log.error({ err: result.error }, 'login failed');
+    return 1;
+  }
+  log.info({ platform }, 'login session saved');
+  return 0;
+}
+
+async function publish(args: string[]): Promise<number> {
+  const mediaPath = firstPositional(args);
+  if (!mediaPath) {
+    log.error(
+      'usage: clipper publish <clip.mp4> --caption "caption" [--platforms tiktok,instagram]',
+    );
+    return 1;
+  }
+  const absolutePath = resolve(mediaPath);
+  if (!existsSync(absolutePath) || !statSync(absolutePath).isFile()) {
+    log.error({ path: absolutePath }, 'clip file not found');
+    return 1;
+  }
+  const caption = flagString(args, '--caption') ?? '';
+  const result = await createBrowserPublisher().publishFile(
+    absolutePath,
+    caption,
+    publishPlatformsFromArgs(args),
+  );
+  for (const item of result.results) {
+    log.info(
+      {
+        platform: item.platform,
+        status: item.status,
+        error: item.error,
+        screenshot: item.screenshot,
+      },
+      'publish result',
+    );
+  }
+  if (!result.ok) {
+    log.error({ err: result.error }, 'publish did not fully complete');
+    return 1;
+  }
   return 0;
 }
 
@@ -281,6 +353,8 @@ function printHelp(): void {
       '  add <url>     Enqueue a source URL for the worker',
       '  work          Run the queue worker',
       '  monitor       Poll configured channels and auto-enqueue new VODs',
+      '  login <target> Save a browser session for tiktok or instagram',
+      '  publish <mp4>  Publish a rendered clip (--caption "...", --platforms ...)',
       '  web           Run the local browser UI (http://localhost:3333)',
       '  queue [status] List queued jobs (pending|running|done|failed)',
       '  qa <file|dir> Review rendered clips: metadata checks + contact sheets',
@@ -311,6 +385,12 @@ async function main(): Promise<void> {
       break;
     case 'monitor':
       process.exitCode = await monitor();
+      break;
+    case 'login':
+      process.exitCode = await login(rest);
+      break;
+    case 'publish':
+      process.exitCode = await publish(rest);
       break;
     case 'web':
       process.exitCode = await web();

@@ -43,6 +43,13 @@ const MANAGED_KEYS = [
   'CLIPPER_LAYOUT',
   'CLIPPER_MONITOR_CHANNELS',
   'CLIPPER_MONITOR_INTERVAL_SEC',
+  'CLIPPER_PUBLISH_ENABLED',
+  'CLIPPER_PUBLISH_PLATFORMS',
+  'CLIPPER_PUBLISH_MIN_QUALITY',
+  'CLIPPER_PUBLISH_PYTHON',
+  'CLIPPER_PUBLISH_PROFILE_DIR',
+  'CLIPPER_PUBLISH_BROWSER_EXECUTABLE',
+  'CLIPPER_PUBLISH_HEADLESS',
   'CLIPPER_WEB_PASSWORD',
   'CLIPPER_WEB_PASSWORD_HASH',
   'CLIPPER_WEB_SESSION_SECRET',
@@ -110,6 +117,12 @@ describe('config', () => {
     });
     expect(cfg.web).toMatchObject({
       cookieSecure: false,
+    });
+    expect(cfg.publish).toMatchObject({
+      enabled: false,
+      platforms: ['tiktok', 'instagram'],
+      minQuality: 75,
+      headless: false,
     });
     expect(cfg.web.password).toBeUndefined();
   });
@@ -215,6 +228,26 @@ describe('config', () => {
       passwordHash: 'scrypt:v1:salt:hash',
       sessionSecret: 'secret',
       cookieSecure: true,
+    });
+  });
+
+  it('parses browser publishing settings', () => {
+    process.env.CLIPPER_PUBLISH_ENABLED = 'true';
+    process.env.CLIPPER_PUBLISH_PLATFORMS = ' instagram, youtube, unknown ';
+    process.env.CLIPPER_PUBLISH_MIN_QUALITY = '82';
+    process.env.CLIPPER_PUBLISH_PYTHON = 'python3.12';
+    process.env.CLIPPER_PUBLISH_PROFILE_DIR = '/profiles';
+    process.env.CLIPPER_PUBLISH_BROWSER_EXECUTABLE = '/usr/bin/google-chrome';
+    process.env.CLIPPER_PUBLISH_HEADLESS = 'true';
+    resetConfigCache();
+    expect(getConfig().publish).toMatchObject({
+      enabled: true,
+      platforms: ['instagram', 'youtube'],
+      minQuality: 82,
+      python: 'python3.12',
+      profileDir: '/profiles',
+      browserExecutable: '/usr/bin/google-chrome',
+      headless: true,
     });
   });
 

@@ -8,6 +8,7 @@
  */
 import { config as loadDotenv } from 'dotenv';
 import { z } from 'zod';
+import type { PublishTarget } from '../core/types.js';
 import { parseRect, type LayoutMode, type PanelRect } from '../render/layout.js';
 import type { AxisPolicy, SkillAxis } from '../research/skill.js';
 
@@ -140,6 +141,21 @@ const schema = z.object({
   CLIPPER_MONITOR_CHANNELS: z.string().default(''),
   CLIPPER_MONITOR_INTERVAL_SEC: z.coerce.number().int().positive().default(900),
 
+  // Browser-session publishing bridge. This reuses manually logged-in Chromium profiles.
+  CLIPPER_PUBLISH_ENABLED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  CLIPPER_PUBLISH_PLATFORMS: z.string().default('tiktok,instagram'),
+  CLIPPER_PUBLISH_MIN_QUALITY: z.coerce.number().min(0).max(100).default(75),
+  CLIPPER_PUBLISH_PYTHON: z.string().optional(),
+  CLIPPER_PUBLISH_PROFILE_DIR: z.string().optional(),
+  CLIPPER_PUBLISH_BROWSER_EXECUTABLE: z.string().optional(),
+  CLIPPER_PUBLISH_HEADLESS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Publishing — TikTok
   TIKTOK_CLIENT_KEY: z.string().optional(),
   TIKTOK_CLIENT_SECRET: z.string().optional(),
@@ -254,6 +270,13 @@ export interface Config {
     intervalSec: number;
   };
   publish: {
+    enabled: boolean;
+    platforms: PublishTarget[];
+    minQuality: number;
+    python?: string;
+    profileDir?: string;
+    browserExecutable?: string;
+    headless: boolean;
     tiktok: { clientKey?: string; clientSecret?: string; accessToken?: string };
     instagram: { accessToken?: string; businessAccountId?: string };
     youtube: { clientId?: string; clientSecret?: string; refreshToken?: string };
@@ -308,7 +331,19 @@ function splitCsv(raw: string): string[] {
     .filter((s) => s.length > 0);
 }
 
-function resolveProvider(raw: RawConfig['AI_PROVIDER'], openaiKey?: string, groqKey?: string): AiProvider {
+function splitPublishTargets(raw: string): PublishTarget[] {
+  const allowed = new Set<PublishTarget>(['tiktok', 'instagram', 'youtube']);
+  const targets = splitCsv(raw.toLowerCase()).filter((value): value is PublishTarget =>
+    allowed.has(value as PublishTarget),
+  );
+  return targets.length > 0 ? targets : ['tiktok', 'instagram'];
+}
+
+function resolveProvider(
+  raw: RawConfig['AI_PROVIDER'],
+  openaiKey?: string,
+  groqKey?: string,
+): AiProvider {
   if (raw === 'openai' || raw === 'groq') return raw;
   if (openaiKey) return 'openai';
   if (groqKey) return 'groq';
@@ -408,6 +443,13 @@ export function getConfig(): Config {
       intervalSec: env.CLIPPER_MONITOR_INTERVAL_SEC,
     },
     publish: {
+      enabled: env.CLIPPER_PUBLISH_ENABLED,
+      platforms: splitPublishTargets(env.CLIPPER_PUBLISH_PLATFORMS),
+      minQuality: env.CLIPPER_PUBLISH_MIN_QUALITY,
+      python: env.CLIPPER_PUBLISH_PYTHON,
+      profileDir: env.CLIPPER_PUBLISH_PROFILE_DIR,
+      browserExecutable: env.CLIPPER_PUBLISH_BROWSER_EXECUTABLE,
+      headless: env.CLIPPER_PUBLISH_HEADLESS,
       tiktok: {
         clientKey: env.TIKTOK_CLIENT_KEY,
         clientSecret: env.TIKTOK_CLIENT_SECRET,

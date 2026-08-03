@@ -25,6 +25,10 @@ work/
 .playwright-mcp/
 *_data.json
 
+# Python publisher bridge caches
+__pycache__/
+*.py[cod]
+
 # OS
 .DS_Store
 Thumbs.db
