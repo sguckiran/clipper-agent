@@ -14,7 +14,7 @@
  */
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { execa } from 'execa';
 import { getConfig, resetConfigCache } from '../config/index.js';
 import type { DetectOptions } from '../core/contracts.js';
@@ -136,6 +136,8 @@ function positionalArgs(args: string[]): string[] {
     '--layout',
     '--panels',
     '--skip',
+    '--outro',
+    '--target-sec',
     '--platforms',
     '--caption',
     '--out-dir',
@@ -211,13 +213,90 @@ function localClipFiles(targets: string[]): string[] {
   return outro.length > 0 ? outro : unique;
 }
 
+function defaultOutroPath(): string | undefined {
+  const explicit = process.env.CLIPPER_OUTRO_PATH;
+  if (explicit && existsSync(explicit)) return explicit;
+  const profile = process.env.USERPROFILE;
+  if (!profile) return undefined;
+  const candidate = join(profile, 'Downloads', 'add_a_Join_the_waitlist_by_co.mp4');
+  return existsSync(candidate) ? candidate : undefined;
+}
+
+async function probeDurationSec(path: string): Promise<number | undefined> {
+  try {
+    const { stdout } = await execa('ffprobe', [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=noprint_wrappers=1:nokey=1',
+      path,
+    ]);
+    const duration = Number(stdout.trim());
+    return Number.isFinite(duration) ? duration : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function appendOutro(inputPath: string, outroPath: string, outputPath: string): Promise<void> {
+  await mkdir(dirname(outputPath), { recursive: true });
+  await execa(ffmpegBinary(), [
+    '-y',
+    '-i',
+    inputPath,
+    '-i',
+    outroPath,
+    '-filter_complex',
+    [
+      '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0]',
+      '[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1]',
+      '[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]',
+      '[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1]',
+      '[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]',
+    ].join(';'),
+    '-map',
+    '[v]',
+    '-map',
+    '[a]',
+    '-c:v',
+    'libx264',
+    '-preset',
+    'veryfast',
+    '-crf',
+    '23',
+    '-c:a',
+    'aac',
+    '-b:a',
+    '160k',
+    '-movflags',
+    '+faststart',
+    outputPath,
+  ]);
+}
+
+async function prepareLocalClip(path: string, opts: { outroPath?: string; targetSec: number }): Promise<string> {
+  if (path.toLowerCase().endsWith('.outro.mp4')) return path;
+  const duration = await probeDurationSec(path);
+  if (!opts.outroPath || duration === undefined || duration >= opts.targetSec) return path;
+
+  const stageDir = join(dataPaths().clips, 'post-local');
+  const outputPath = join(stageDir, `${basename(path, '.mp4')}.outro.mp4`);
+  if (!existsSync(outputPath)) {
+    log.info({ input: path, outro: opts.outroPath, output: outputPath }, 'preparing local clip with outro');
+    await appendOutro(path, opts.outroPath, outputPath);
+  }
+  return outputPath;
+}
+
 async function postLocal(args: string[]): Promise<number> {
   const positional = positionalArgs(args);
   const creatorHandle = positional[0];
   const targets = positional.slice(1);
   if (!creatorHandle?.startsWith('@') || targets.length === 0) {
     log.error(
-      'usage: clipper post-local @creator <clip-file|clip-dir> [...] [--interval-min 20] [--skip N] [--platforms tiktok,instagram] [--dry-run]',
+      'usage: clipper post-local @creator <clip-file|clip-dir> [...] [--interval-min 20] [--outro outro.mp4] [--target-sec 60] [--skip N] [--platforms tiktok,instagram] [--dry-run]',
     );
     return 1;
   }
@@ -227,8 +306,13 @@ async function postLocal(args: string[]): Promise<number> {
   const platforms = publishPlatformsOrTikTok(args);
   const intervalMin = Math.max(0, flagNumber(args, '--interval-min') ?? 20);
   const skip = Math.max(0, flagNumber(args, '--skip') ?? 0);
+  const targetSec = Math.max(1, flagNumber(args, '--target-sec') ?? 60);
+  const outroPath = flagString(args, '--outro') ?? defaultOutroPath();
   const dryRun = args.includes('--dry-run');
-  const clips = localClipFiles(targets).slice(skip);
+  const sourceClips = localClipFiles(targets).slice(skip);
+  const clips = dryRun
+    ? sourceClips
+    : await Promise.all(sourceClips.map((path) => prepareLocalClip(path, { outroPath, targetSec })));
   const markerDir = join(dataPaths().work, 'published-local');
   const markerPath = join(markerDir, 'posted.json');
   const logPath = join(markerDir, 'publish-log.jsonl');
@@ -238,14 +322,40 @@ async function postLocal(args: string[]): Promise<number> {
   );
 
   log.info(
-    { creatorHandle, clips: clips.length, pending: pending.length, platforms, intervalMin, skip, dryRun },
+    {
+      creatorHandle,
+      sourceClips: sourceClips.length,
+      clips: clips.length,
+      pending: pending.length,
+      platforms,
+      intervalMin,
+      skip,
+      targetSec,
+      outroPath,
+      dryRun,
+    },
     'local post plan',
   );
   if (pending.length === 0) return 0;
 
   if (dryRun) {
     for (const path of pending) {
-      log.info({ path, caption: localClipCaption(path, creatorHandle) }, 'dry-run local post');
+      const duration = await probeDurationSec(path);
+      const wouldAppendOutro =
+        Boolean(outroPath) &&
+        !path.toLowerCase().endsWith('.outro.mp4') &&
+        duration !== undefined &&
+        duration < targetSec;
+      log.info(
+        {
+          path,
+          durationSec: duration,
+          wouldAppendOutro,
+          outroPath,
+          caption: localClipCaption(path, creatorHandle),
+        },
+        'dry-run local post',
+      );
     }
     return 0;
   }
