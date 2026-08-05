@@ -240,26 +240,43 @@ async function probeDurationSec(path: string): Promise<number | undefined> {
   }
 }
 
-async function appendOutro(inputPath: string, outroPath: string, outputPath: string): Promise<void> {
+async function appendOutro(
+  inputPath: string,
+  outroPath: string,
+  outputPath: string,
+  repeatOutro: number,
+  targetSec: number,
+): Promise<void> {
   await mkdir(dirname(outputPath), { recursive: true });
+  const inputs = ['-i', inputPath];
+  for (let i = 0; i < repeatOutro; i++) inputs.push('-i', outroPath);
+  const videoLabels = [
+    '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0]',
+  ];
+  const audioLabels = ['[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]'];
+  const concatInputs = ['[v0][a0]'];
+  for (let i = 1; i <= repeatOutro; i++) {
+    videoLabels.push(
+      `[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`,
+    );
+    audioLabels.push(`[${i}:a]aformat=sample_rates=44100:channel_layouts=stereo[a${i}]`);
+    concatInputs.push(`[v${i}][a${i}]`);
+  }
   await execa(ffmpegBinary(), [
     '-y',
-    '-i',
-    inputPath,
-    '-i',
-    outroPath,
+    ...inputs,
     '-filter_complex',
     [
-      '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0]',
-      '[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1]',
-      '[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]',
-      '[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1]',
-      '[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]',
+      ...videoLabels,
+      ...audioLabels,
+      `${concatInputs.join('')}concat=n=${repeatOutro + 1}:v=1:a=1[v][a]`,
     ].join(';'),
     '-map',
     '[v]',
     '-map',
     '[a]',
+    '-t',
+    String(targetSec),
     '-c:v',
     'libx264',
     '-preset',
@@ -280,12 +297,26 @@ async function prepareLocalClip(path: string, opts: { outroPath?: string; target
   if (path.toLowerCase().endsWith('.outro.mp4')) return path;
   const duration = await probeDurationSec(path);
   if (!opts.outroPath || duration === undefined || duration >= opts.targetSec) return path;
+  const outroDuration = await probeDurationSec(opts.outroPath);
+  if (outroDuration === undefined || outroDuration <= 0) return path;
+  const repeatOutro = Math.max(1, Math.ceil((opts.targetSec - duration) / outroDuration));
 
   const stageDir = join(dataPaths().clips, 'post-local');
   const outputPath = join(stageDir, `${basename(path, '.mp4')}.outro.mp4`);
-  if (!existsSync(outputPath)) {
-    log.info({ input: path, outro: opts.outroPath, output: outputPath }, 'preparing local clip with outro');
-    await appendOutro(path, opts.outroPath, outputPath);
+  const stagedDuration = existsSync(outputPath) ? await probeDurationSec(outputPath) : undefined;
+  if (stagedDuration === undefined || stagedDuration < opts.targetSec) {
+    log.info(
+      {
+        input: path,
+        outro: opts.outroPath,
+        repeatOutro,
+        targetSec: opts.targetSec,
+        stagedDuration,
+        output: outputPath,
+      },
+      'preparing local clip with outro',
+    );
+    await appendOutro(path, opts.outroPath, outputPath, repeatOutro, opts.targetSec);
   }
   return outputPath;
 }
@@ -341,16 +372,26 @@ async function postLocal(args: string[]): Promise<number> {
   if (dryRun) {
     for (const path of pending) {
       const duration = await probeDurationSec(path);
+      const outroDuration = outroPath ? await probeDurationSec(outroPath) : undefined;
       const wouldAppendOutro =
         Boolean(outroPath) &&
         !path.toLowerCase().endsWith('.outro.mp4') &&
         duration !== undefined &&
         duration < targetSec;
+      const repeatOutro =
+        wouldAppendOutro && outroDuration !== undefined && outroDuration > 0
+          ? Math.max(1, Math.ceil((targetSec - duration) / outroDuration))
+          : 0;
       log.info(
         {
           path,
           durationSec: duration,
           wouldAppendOutro,
+          repeatOutro,
+          stagedDurationSec:
+            duration !== undefined && outroDuration !== undefined
+              ? Math.min(targetSec, duration + repeatOutro * outroDuration)
+              : undefined,
           outroPath,
           caption: localClipCaption(path, creatorHandle),
         },
