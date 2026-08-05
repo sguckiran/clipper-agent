@@ -186,57 +186,6 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value.replace("\u200b", "")).strip()
 
 
-def _caption_parts(caption: str) -> list[tuple[str, str]]:
-    parts: list[tuple[str, str]] = []
-    cursor = 0
-    for match in re.finditer(r"#[a-zA-Z0-9_]+", caption):
-        if match.start() > cursor:
-            parts.append(("text", caption[cursor : match.start()]))
-        parts.append(("hashtag", match.group(0)))
-        cursor = match.end()
-    if cursor < len(caption):
-        parts.append(("text", caption[cursor:]))
-    return parts
-
-
-def _select_tiktok_hashtag_suggestion(page: Any, hashtag: str) -> bool:
-    escaped = re.escape(hashtag)
-    candidates = [
-        page.get_by_role("option", name=re.compile(rf"^{escaped}\b", re.I)),
-        page.locator(f"[role='option']:has-text('{hashtag}')"),
-        page.locator(f"[data-e2e*='hashtag' i]:has-text('{hashtag}')"),
-    ]
-    for locator in candidates:
-        try:
-            for index in range(min(locator.count(), 8)):
-                candidate = locator.nth(index)
-                if not candidate.is_visible():
-                    continue
-                box = candidate.bounding_box()
-                # Avoid clicking the text inside the editor itself. TikTok's suggestion rows sit
-                # under the editor and are much taller than a single typed hashtag span.
-                if box and box.get("height", 0) < 24:
-                    continue
-                candidate.click()
-                page.wait_for_timeout(250)
-                return True
-        except Exception:
-            continue
-
-    return False
-
-
-def _type_tiktok_caption(page: Any, caption: str) -> None:
-    for kind, text in _caption_parts(caption):
-        if not text:
-            continue
-        page.keyboard.type(text, delay=5)
-        if kind == "hashtag":
-            page.wait_for_timeout(350)
-            _select_tiktok_hashtag_suggestion(page, text)
-            page.keyboard.press("End")
-
-
 def _set_tiktok_caption(page: Any, caption: str, media_path: Path) -> None:
     caption_box = _first_visible(
         page,
@@ -253,7 +202,7 @@ def _set_tiktok_caption(page: Any, caption: str, media_path: Path) -> None:
         caption_box.click(position={"x": 10, "y": 10})
         page.keyboard.press("Control+A")
         page.keyboard.press("Backspace")
-        _type_tiktok_caption(page, caption)
+        page.keyboard.type(caption, delay=5)
         page.keyboard.press("Escape")
         page.wait_for_timeout(500)
     except Exception as exc:
