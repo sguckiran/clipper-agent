@@ -296,7 +296,10 @@ async function postLocal(args: string[]): Promise<number> {
       if (item.status === 'published') posted.add(`${item.platform}:${path}`);
     }
     await writeFile(markerPath, JSON.stringify([...posted].sort(), null, 2), 'utf8');
-    if (!result.ok) log.error({ path, err: result.error }, 'local publish did not fully complete');
+    if (!result.ok) {
+      log.error({ path, err: result.error }, 'local publish did not fully complete; stopping');
+      return 1;
+    }
   }
   return 0;
 }
@@ -423,7 +426,8 @@ async function campaign(args: string[]): Promise<number> {
       );
     }
     if (!publishResult.ok) {
-      log.error({ err: publishResult.error }, 'publish failed; continuing to next scheduled clip');
+      log.error({ err: publishResult.error }, 'publish failed; stopping campaign');
+      return 1;
     }
   }
   return 0;

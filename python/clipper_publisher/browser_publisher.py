@@ -205,7 +205,6 @@ def _select_tiktok_hashtag_suggestion(page: Any, hashtag: str) -> bool:
         page.get_by_role("option", name=re.compile(rf"^{escaped}\b", re.I)),
         page.locator(f"[role='option']:has-text('{hashtag}')"),
         page.locator(f"[data-e2e*='hashtag' i]:has-text('{hashtag}')"),
-        page.locator(f"div:has-text('{hashtag}')"),
     ]
     for locator in candidates:
         try:
@@ -235,6 +234,7 @@ def _type_tiktok_caption(page: Any, caption: str) -> None:
         if kind == "hashtag":
             page.wait_for_timeout(350)
             _select_tiktok_hashtag_suggestion(page, text)
+            page.keyboard.press("End")
 
 
 def _set_tiktok_caption(page: Any, caption: str, media_path: Path) -> None:
