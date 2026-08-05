@@ -12,8 +12,9 @@
  *   queue    list queued jobs
  *   prompts  inspect the prompt store
  */
-import { existsSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { basename, join, resolve } from 'node:path';
 import { execa } from 'execa';
 import { getConfig, resetConfigCache } from '../config/index.js';
 import type { DetectOptions } from '../core/contracts.js';
@@ -134,6 +135,7 @@ function positionalArgs(args: string[]): string[] {
     '--interval-min',
     '--layout',
     '--panels',
+    '--skip',
     '--platforms',
     '--caption',
     '--out-dir',
@@ -165,6 +167,138 @@ function publishPlatformsFromArgs(args: string[]): BrowserPublishTarget[] | unde
 
 function publishPlatformsOrTikTok(args: string[]): BrowserPublishTarget[] {
   return publishPlatformsFromArgs(args) ?? ['tiktok'];
+}
+
+async function readJsonFile<T>(path: string, fallback: T): Promise<T> {
+  try {
+    return JSON.parse(await readFile(path, 'utf8')) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+async function appendJsonLine(path: string, value: Record<string, unknown>): Promise<void> {
+  await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8');
+}
+
+function localClipCaption(path: string, creatorHandle: string): string {
+  const title = basename(path, '.mp4').replace(/^[a-f0-9]+-/, '').replace(/\.outro$/, '');
+  return [
+    `Krimoe clip ${title}`,
+    '',
+    `Credit: ${creatorHandle}`,
+    '',
+    '#fyp #viral #streamer #omegle #livestream #funnyclips',
+  ].join('\n');
+}
+
+function localClipFiles(targets: string[]): string[] {
+  const files: string[] = [];
+  for (const target of targets) {
+    const absolute = resolve(target);
+    if (!existsSync(absolute)) continue;
+    const stat = statSync(absolute);
+    if (stat.isFile() && absolute.toLowerCase().endsWith('.mp4')) {
+      files.push(absolute);
+    } else if (stat.isDirectory()) {
+      for (const entry of readdirSync(absolute)) {
+        const path = join(absolute, entry);
+        if (statSync(path).isFile() && path.toLowerCase().endsWith('.mp4')) files.push(path);
+      }
+    }
+  }
+  const unique = [...new Set(files)].sort((a, b) => basename(a).localeCompare(basename(b)));
+  const outro = unique.filter((path) => path.toLowerCase().endsWith('.outro.mp4'));
+  return outro.length > 0 ? outro : unique;
+}
+
+async function postLocal(args: string[]): Promise<number> {
+  const positional = positionalArgs(args);
+  const creatorHandle = positional[0];
+  const targets = positional.slice(1);
+  if (!creatorHandle?.startsWith('@') || targets.length === 0) {
+    log.error(
+      'usage: clipper post-local @creator <clip-file|clip-dir> [...] [--interval-min 20] [--skip N] [--platforms tiktok,instagram] [--dry-run]',
+    );
+    return 1;
+  }
+
+  process.env.CLIPPER_CREATOR_HANDLE = creatorHandle;
+  resetConfigCache();
+  const platforms = publishPlatformsOrTikTok(args);
+  const intervalMin = Math.max(0, flagNumber(args, '--interval-min') ?? 20);
+  const skip = Math.max(0, flagNumber(args, '--skip') ?? 0);
+  const dryRun = args.includes('--dry-run');
+  const clips = localClipFiles(targets).slice(skip);
+  const markerDir = join(dataPaths().work, 'published-local');
+  const markerPath = join(markerDir, 'posted.json');
+  const logPath = join(markerDir, 'publish-log.jsonl');
+  const posted = new Set(await readJsonFile<string[]>(markerPath, []));
+  const pending = clips.filter(
+    (path) => !platforms.every((platform) => posted.has(`${platform}:${path}`)),
+  );
+
+  log.info(
+    { creatorHandle, clips: clips.length, pending: pending.length, platforms, intervalMin, skip, dryRun },
+    'local post plan',
+  );
+  if (pending.length === 0) return 0;
+
+  if (dryRun) {
+    for (const path of pending) {
+      log.info({ path, caption: localClipCaption(path, creatorHandle) }, 'dry-run local post');
+    }
+    return 0;
+  }
+
+  await mkdir(markerDir, { recursive: true });
+  const publisher = createBrowserPublisher();
+  for (let index = 0; index < pending.length; index++) {
+    const path = pending[index]!;
+    if (index > 0 && intervalMin > 0) {
+      const delayMs = intervalMin * 60 * 1000;
+      log.info(
+        { minutes: intervalMin, nextAt: new Date(Date.now() + delayMs).toISOString() },
+        'waiting before next local post',
+      );
+      await sleep(delayMs);
+    }
+    const caption = localClipCaption(path, creatorHandle);
+    await appendJsonLine(logPath, {
+      at: new Date().toISOString(),
+      event: 'attempt',
+      path,
+      creatorHandle,
+      platforms,
+      caption,
+    });
+    const result = await publisher.publishFile(path, caption, platforms);
+    for (const item of result.results) {
+      log.info(
+        {
+          platform: item.platform,
+          status: item.status,
+          error: item.error,
+          screenshot: item.screenshot,
+        },
+        'publish result',
+      );
+      await appendJsonLine(logPath, {
+        at: new Date().toISOString(),
+        event: 'result',
+        path,
+        creatorHandle,
+        platform: item.platform,
+        status: item.status,
+        error: item.error,
+        screenshot: item.screenshot,
+      });
+      if (item.status === 'published') posted.add(`${item.platform}:${path}`);
+    }
+    await writeFile(markerPath, JSON.stringify([...posted].sort(), null, 2), 'utf8');
+    if (!result.ok) log.error({ path, err: result.error }, 'local publish did not fully complete');
+  }
+  return 0;
 }
 
 function applyCampaignRenderPreset(
@@ -517,6 +651,7 @@ function printHelp(): void {
       'Commands:',
       '  @creator <url> Clip and post with attribution, spaced by 20 minutes',
       '  campaign @creator <url> Same as @creator shorthand',
+      '  post-local @creator <dir|mp4> Post existing local clips at intervals',
       '  run <url>     Clip a source now (--limit N, --min-score N)',
       '  add <url>     Enqueue a source URL for the worker',
       '  work          Run the queue worker',
@@ -544,6 +679,9 @@ async function main(): Promise<void> {
       break;
     case 'campaign':
       process.exitCode = await campaign(rest);
+      break;
+    case 'post-local':
+      process.exitCode = await postLocal(rest);
       break;
     case 'run':
       process.exitCode = await run(rest);
