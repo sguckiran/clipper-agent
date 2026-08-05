@@ -225,6 +225,14 @@ clipper work
 Publish jobs are separate queue items. If the process dies mid-post, that publish job stays
 `running` instead of being blindly retried, which avoids duplicate posts.
 
+On Windows, the publisher defaults to the Python launcher (`py -3`). If your machine only
+has the broken Microsoft Store `python.exe` shim or `py -3` cannot launch, install Python
+from python.org and set `CLIPPER_PUBLISH_PYTHON` to the real executable path, for example:
+
+```env
+CLIPPER_PUBLISH_PYTHON=C:\Users\sinan\AppData\Local\Programs\Python\Python312\python.exe
+```
+
 ### 6. Review rendered clips
 
 Generate a contact sheet and JSON QA report for a rendered clip or a directory of clips:

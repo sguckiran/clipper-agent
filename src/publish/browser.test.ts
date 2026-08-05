@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resetConfigCache } from '../config/index.js';
-import { BrowserPublisher, defaultPublisherScriptPath } from './browser.js';
+import { BrowserPublisher, defaultPublisherScriptPath, resolvePythonCommand } from './browser.js';
 
 const MANAGED_KEYS = ['CLIPPER_DATA_DIR', 'CLIPPER_PUBLISH_PLATFORMS'];
 
@@ -30,6 +30,14 @@ describe('BrowserPublisher', () => {
     expect(defaultPublisherScriptPath()).toMatch(
       /python[\\/]clipper_publisher[\\/]browser_publisher\.py$/,
     );
+  });
+
+  it('supports Python launcher commands with arguments', () => {
+    expect(resolvePythonCommand('py -3')).toEqual({ bin: 'py', args: ['-3'] });
+    expect(resolvePythonCommand('"C:\\Program Files\\Python312\\python.exe"')).toEqual({
+      bin: 'C:\\Program Files\\Python312\\python.exe',
+      args: [],
+    });
   });
 
   it('sends a publish request to the bridge and parses results', async () => {

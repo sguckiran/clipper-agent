@@ -1,4 +1,5 @@
 import { execa } from 'execa';
+import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getConfig } from '../config/index.js';
@@ -36,8 +37,26 @@ export interface PublishClipOptions {
 
 const SUPPORTED_BROWSER_TARGETS = new Set<BrowserPublishTarget>(['tiktok', 'instagram']);
 
-function defaultPython(): string {
-  return process.platform === 'win32' ? 'python' : 'python3';
+interface PythonCommand {
+  bin: string;
+  args: string[];
+}
+
+function splitCommand(value: string): string[] {
+  const matches = value.match(/"[^"]+"|'[^']+'|\S+/g) ?? [];
+  return matches.map((part) => part.replace(/^['"]|['"]$/g, ''));
+}
+
+export function resolvePythonCommand(configured?: string): PythonCommand {
+  if (configured?.trim()) {
+    const trimmed = configured.trim();
+    if (existsSync(trimmed)) return { bin: trimmed, args: [] };
+    const [bin, ...args] = splitCommand(trimmed);
+    if (bin) return { bin, args };
+  }
+  return process.platform === 'win32'
+    ? { bin: 'py', args: ['-3'] }
+    : { bin: 'python3', args: [] };
 }
 
 export function defaultPublisherScriptPath(): string {
@@ -93,29 +112,43 @@ export class BrowserPublisher {
 
   async login(platform: BrowserPublishTarget): Promise<BrowserPublishResponse> {
     const payload = await this.basePayload({ action: 'login', platform });
-    const python = this.opts.python ?? getConfig().publish.python ?? defaultPython();
+    const python = resolvePythonCommand(this.opts.python ?? getConfig().publish.python);
     const script = this.opts.scriptPath ?? defaultPublisherScriptPath();
-    const child = await execa(python, [script], {
+    const child = await execa(python.bin, [...python.args, script], {
       env: { CLIPPER_PUBLISH_PAYLOAD: JSON.stringify(payload) },
       stdio: 'inherit',
       reject: false,
-    });
+    }).catch((err: unknown) => ({
+      exitCode: undefined,
+      shortMessage: err instanceof Error ? err.message : String(err),
+    }));
+    const loginError =
+      child.exitCode === 0
+        ? undefined
+        : 'shortMessage' in child
+          ? child.shortMessage
+          : `publisher login exited with ${(child as { exitCode?: unknown }).exitCode}`;
     return {
       ok: child.exitCode === 0,
       results: [],
-      error: child.exitCode === 0 ? undefined : `publisher login exited with ${child.exitCode}`,
+      error: loginError,
     };
   }
 
   private async call(payload: Record<string, unknown>): Promise<BrowserPublishResponse> {
     const fullPayload = await this.basePayload(payload);
-    const python = this.opts.python ?? getConfig().publish.python ?? defaultPython();
+    const python = resolvePythonCommand(this.opts.python ?? getConfig().publish.python);
     const script = this.opts.scriptPath ?? defaultPublisherScriptPath();
-    const child = await execa(python, [script], {
+    const child = await execa(python.bin, [...python.args, script], {
       input: JSON.stringify(fullPayload),
       reject: false,
       all: true,
-    });
+    }).catch((err: unknown) => ({
+      exitCode: undefined,
+      stdout: '',
+      stderr: '',
+      all: err instanceof Error ? err.message : String(err),
+    }));
     const response = parseResponse(child.stdout || child.all || '');
     if (child.exitCode !== 0 && !response.error && response.results?.length === 0) {
       response.error = child.stderr || child.all || `publisher exited with ${child.exitCode}`;
