@@ -501,7 +501,7 @@ async function campaign(args: string[]): Promise<number> {
   const cfg = getConfig();
   const opts = detectOptionsFromArgs(args);
   const platforms = publishPlatformsOrTikTok(args);
-  const publishMinQuality = publishMinQualityFromArgs(args) ?? cfg.publish.minQuality;
+  const publishMinQuality = publishMinQualityFromArgs(args) ?? opts.minScore ?? cfg.publish.minQuality;
   const intervalMin = Math.max(0, flagNumber(args, '--interval-min') ?? 20);
   const outroPath = flagString(args, '--outro') ?? defaultOutroPath();
   const dryRun = args.includes('--dry-run');
