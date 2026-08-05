@@ -181,10 +181,9 @@ async function appendJsonLine(path: string, value: Record<string, unknown>): Pro
   await appendFile(path, `${JSON.stringify(value)}\n`, 'utf8');
 }
 
-function localClipCaption(path: string, creatorHandle: string): string {
-  const title = basename(path, '.mp4').replace(/^[a-f0-9]+-/, '').replace(/\.outro$/, '');
+function localClipCaption(_path: string, creatorHandle: string): string {
   return [
-    `Krimoe clip ${title}`,
+    'This Omegle moment got out of pocket',
     '',
     `Credit: ${creatorHandle}`,
     '',
