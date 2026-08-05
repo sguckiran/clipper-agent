@@ -244,32 +244,22 @@ async function appendOutro(
   inputPath: string,
   outroPath: string,
   outputPath: string,
-  repeatOutro: number,
   targetSec: number,
 ): Promise<void> {
   await mkdir(dirname(outputPath), { recursive: true });
-  const inputs = ['-i', inputPath];
-  for (let i = 0; i < repeatOutro; i++) inputs.push('-i', outroPath);
-  const videoLabels = [
-    '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0]',
-  ];
-  const audioLabels = ['[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]'];
-  const concatInputs = ['[v0][a0]'];
-  for (let i = 1; i <= repeatOutro; i++) {
-    videoLabels.push(
-      `[${i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v${i}]`,
-    );
-    audioLabels.push(`[${i}:a]aformat=sample_rates=44100:channel_layouts=stereo[a${i}]`);
-    concatInputs.push(`[v${i}][a${i}]`);
-  }
   await execa(ffmpegBinary(), [
     '-y',
-    ...inputs,
+    '-i',
+    inputPath,
+    '-i',
+    outroPath,
     '-filter_complex',
     [
-      ...videoLabels,
-      ...audioLabels,
-      `${concatInputs.join('')}concat=n=${repeatOutro + 1}:v=1:a=1[v][a]`,
+      '[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v0]',
+      '[1:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,format=yuv420p[v1]',
+      '[0:a]aformat=sample_rates=44100:channel_layouts=stereo[a0]',
+      '[1:a]aformat=sample_rates=44100:channel_layouts=stereo[a1]',
+      '[v0][a0][v1][a1]concat=n=2:v=1:a=1[v][a]',
     ].join(';'),
     '-map',
     '[v]',
@@ -299,7 +289,19 @@ async function preparePostClip(path: string, opts: { outroPath?: string; targetS
   if (!opts.outroPath || duration === undefined || duration >= opts.targetSec) return path;
   const outroDuration = await probeDurationSec(opts.outroPath);
   if (outroDuration === undefined || outroDuration <= 0) return path;
-  const repeatOutro = Math.max(1, Math.ceil((opts.targetSec - duration) / outroDuration));
+  if (duration + outroDuration < opts.targetSec) {
+    log.warn(
+      {
+        input: path,
+        duration,
+        outro: opts.outroPath,
+        outroDuration,
+        targetSec: opts.targetSec,
+      },
+      'skipping local clip: too short to reach target with one outro',
+    );
+    return path;
+  }
 
   const stageDir = join(dataPaths().clips, 'post-local');
   const outputPath = join(stageDir, `${basename(path, '.mp4')}.outro.mp4`);
@@ -309,16 +311,20 @@ async function preparePostClip(path: string, opts: { outroPath?: string; targetS
       {
         input: path,
         outro: opts.outroPath,
-        repeatOutro,
         targetSec: opts.targetSec,
         stagedDuration,
         output: outputPath,
       },
       'preparing local clip with outro',
     );
-    await appendOutro(path, opts.outroPath, outputPath, repeatOutro, opts.targetSec);
+    await appendOutro(path, opts.outroPath, outputPath, opts.targetSec);
   }
   return outputPath;
+}
+
+async function isAtLeastDuration(path: string, minSec: number): Promise<boolean> {
+  const duration = await probeDurationSec(path);
+  return duration !== undefined && duration + 0.05 >= minSec;
 }
 
 async function postLocal(args: string[]): Promise<number> {
@@ -348,7 +354,12 @@ async function postLocal(args: string[]): Promise<number> {
   const markerPath = join(markerDir, 'posted.json');
   const logPath = join(markerDir, 'publish-log.jsonl');
   const posted = new Set(await readJsonFile<string[]>(markerPath, []));
-  const pending = clips.filter(
+  const longEnough = [];
+  for (const path of clips) {
+    if (await isAtLeastDuration(path, targetSec)) longEnough.push(path);
+    else log.warn({ path, targetSec }, 'skipping local clip: final staged file is under target duration');
+  }
+  const pending = longEnough.filter(
     (path) => !platforms.every((platform) => posted.has(`${platform}:${path}`)),
   );
 
@@ -357,6 +368,7 @@ async function postLocal(args: string[]): Promise<number> {
       creatorHandle,
       sourceClips: sourceClips.length,
       clips: clips.length,
+      longEnough: longEnough.length,
       pending: pending.length,
       platforms,
       intervalMin,
@@ -377,20 +389,17 @@ async function postLocal(args: string[]): Promise<number> {
         Boolean(outroPath) &&
         !path.toLowerCase().endsWith('.outro.mp4') &&
         duration !== undefined &&
-        duration < targetSec;
-      const repeatOutro =
-        wouldAppendOutro && outroDuration !== undefined && outroDuration > 0
-          ? Math.max(1, Math.ceil((targetSec - duration) / outroDuration))
-          : 0;
+        outroDuration !== undefined &&
+        duration < targetSec &&
+        duration + outroDuration >= targetSec;
       log.info(
         {
           path,
           durationSec: duration,
-          wouldAppendOutro,
-          repeatOutro,
+          wouldAppendOutroOnce: wouldAppendOutro,
           stagedDurationSec:
             duration !== undefined && outroDuration !== undefined
-              ? Math.min(targetSec, duration + repeatOutro * outroDuration)
+              ? Math.min(targetSec, duration + (wouldAppendOutro ? outroDuration : 0))
               : undefined,
           outroPath,
           caption: localClipCaption(path, creatorHandle),
@@ -483,6 +492,10 @@ async function campaign(args: string[]): Promise<number> {
   }
 
   process.env.CLIPPER_CREATOR_HANDLE = creatorHandle;
+  const targetSec = Math.max(60, flagNumber(args, '--target-sec') ?? 60);
+  process.env.CLIPPER_CLIP_MIN_SEC = String(targetSec);
+  process.env.CLIPPER_CLIP_TARGET_SEC = String(targetSec);
+  process.env.CLIPPER_CLIP_MAX_SEC = String(targetSec + 5);
   const renderPreset = applyCampaignRenderPreset(args, creatorHandle);
   resetConfigCache();
   const cfg = getConfig();
@@ -490,7 +503,6 @@ async function campaign(args: string[]): Promise<number> {
   const platforms = publishPlatformsOrTikTok(args);
   const publishMinQuality = publishMinQualityFromArgs(args) ?? cfg.publish.minQuality;
   const intervalMin = Math.max(0, flagNumber(args, '--interval-min') ?? 20);
-  const targetSec = Math.max(60, flagNumber(args, '--target-sec') ?? 60);
   const outroPath = flagString(args, '--outro') ?? defaultOutroPath();
   const dryRun = args.includes('--dry-run');
 
@@ -511,6 +523,11 @@ async function campaign(args: string[]): Promise<number> {
         : await preparePostClip(clip.renderedPath!, { outroPath, targetSec }),
     })),
   );
+  const longEnoughPostFiles = [];
+  for (const item of postFiles) {
+    if (dryRun || (await isAtLeastDuration(item.path, targetSec))) longEnoughPostFiles.push(item);
+    else log.warn({ path: item.path, targetSec }, 'skipping campaign clip: staged file is under target duration');
+  }
 
   log.info(
     {
@@ -518,6 +535,7 @@ async function campaign(args: string[]): Promise<number> {
       source: result.source.id,
       rendered: result.clips.length,
       publishable: publishable.length,
+      longEnough: longEnoughPostFiles.length,
       platforms,
       publishMinQuality,
       intervalMin,
@@ -536,27 +554,24 @@ async function campaign(args: string[]): Promise<number> {
   }
 
   if (dryRun) {
-    for (const { clip, path } of postFiles) {
+    for (const { clip, path } of longEnoughPostFiles) {
       const duration = await probeDurationSec(path);
       const outroDuration = outroPath ? await probeDurationSec(outroPath) : undefined;
       const wouldAppendOutro =
         Boolean(outroPath) &&
         !path.toLowerCase().endsWith('.outro.mp4') &&
         duration !== undefined &&
-        duration < targetSec;
-      const repeatOutro =
-        wouldAppendOutro && outroDuration !== undefined && outroDuration > 0
-          ? Math.max(1, Math.ceil((targetSec - duration) / outroDuration))
-          : 0;
+        outroDuration !== undefined &&
+        duration < targetSec &&
+        duration + outroDuration >= targetSec;
       log.info(
         {
           path,
           durationSec: duration,
-          wouldAppendOutro,
-          repeatOutro,
+          wouldAppendOutroOnce: wouldAppendOutro,
           stagedDurationSec:
             duration !== undefined && outroDuration !== undefined
-              ? Math.min(targetSec, duration + repeatOutro * outroDuration)
+              ? Math.min(targetSec, duration + (wouldAppendOutro ? outroDuration : 0))
               : undefined,
           quality: clipQuality(clip),
           caption: clip.caption.descriptions?.tiktok ?? clip.caption.text,
@@ -568,15 +583,15 @@ async function campaign(args: string[]): Promise<number> {
   }
 
   const publisher = createBrowserPublisher();
-  for (let index = 0; index < postFiles.length; index++) {
-    const { clip, path } = postFiles[index]!;
+  for (let index = 0; index < longEnoughPostFiles.length; index++) {
+    const { clip, path } = longEnoughPostFiles[index]!;
     if (index > 0 && intervalMin > 0) {
       const delayMs = intervalMin * 60 * 1000;
       log.info(
         {
           minutes: intervalMin,
           nextAt: new Date(Date.now() + delayMs).toISOString(),
-          remaining: postFiles.length - index,
+          remaining: longEnoughPostFiles.length - index,
         },
         'waiting before next post',
       );
@@ -587,7 +602,7 @@ async function campaign(args: string[]): Promise<number> {
     log.info(
       {
         index: index + 1,
-        total: postFiles.length,
+        total: longEnoughPostFiles.length,
         path,
         quality: clipQuality(clip),
       },
