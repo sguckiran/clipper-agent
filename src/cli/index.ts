@@ -15,7 +15,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { execa } from 'execa';
-import { getConfig } from '../config/index.js';
+import { getConfig, resetConfigCache } from '../config/index.js';
 import type { DetectOptions } from '../core/contracts.js';
 import { createLogger } from '../core/logger.js';
 import { sourceFromLocalFile } from '../ingest/index.js';
@@ -28,9 +28,11 @@ import { createBrowserPublisher, type BrowserPublishTarget } from '../publish/br
 import { FilesystemPromptStore } from '../prompts/index.js';
 import { qaTarget } from '../review/index.js';
 import { hashPassword, startWebServer } from '../web/index.js';
-import { enqueueClipJob, Worker } from '../worker/index.js';
+import { clipQuality, enqueueClipJob, Worker } from '../worker/index.js';
 
 const log = createLogger('cli');
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 
 async function checkBinary(bin: string, args: string[]): Promise<string | null> {
   try {
@@ -98,6 +100,10 @@ function detectOptionsFromArgs(args: string[]): DetectOptions {
   return opts;
 }
 
+function publishMinQualityFromArgs(args: string[]): number | undefined {
+  return flagNumber(args, '--publish-min-quality');
+}
+
 /** Read a string CLI flag, e.g. --out-dir ./qa. */
 function flagString(args: string[], name: string): string | undefined {
   const i = args.indexOf(name);
@@ -119,6 +125,32 @@ function firstPositional(args: string[]): string | undefined {
   return undefined;
 }
 
+function positionalArgs(args: string[]): string[] {
+  const out: string[] = [];
+  const valueFlags = new Set([
+    '--limit',
+    '--min-score',
+    '--publish-min-quality',
+    '--interval-min',
+    '--platforms',
+    '--caption',
+    '--out-dir',
+    '--frames',
+    '--min-sec',
+    '--max-sec',
+  ]);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === undefined) continue;
+    if (a.startsWith('--')) {
+      if (valueFlags.has(a)) i++;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
 function publishPlatformsFromArgs(args: string[]): BrowserPublishTarget[] | undefined {
   const raw = flagString(args, '--platforms');
   if (!raw) return undefined;
@@ -127,6 +159,119 @@ function publishPlatformsFromArgs(args: string[]): BrowserPublishTarget[] | unde
     .map((s) => s.trim().toLowerCase())
     .filter((s): s is BrowserPublishTarget => s === 'tiktok' || s === 'instagram');
   return platforms.length > 0 ? platforms : undefined;
+}
+
+function publishPlatformsOrTikTok(args: string[]): BrowserPublishTarget[] {
+  return publishPlatformsFromArgs(args) ?? ['tiktok'];
+}
+
+async function campaign(args: string[]): Promise<number> {
+  const positional = positionalArgs(args);
+  const creatorHandle = positional[0];
+  const target = positional[1];
+  if (!creatorHandle?.startsWith('@') || !target) {
+    log.error(
+      'usage: clipper @creator <url|file> [--limit N] [--min-score N] [--publish-min-quality N] [--interval-min 20] [--platforms tiktok,instagram] [--dry-run]',
+    );
+    log.error('   or: clipper campaign @creator <url|file> ...');
+    return 1;
+  }
+
+  process.env.CLIPPER_CREATOR_HANDLE = creatorHandle;
+  resetConfigCache();
+  const cfg = getConfig();
+  const opts = detectOptionsFromArgs(args);
+  const platforms = publishPlatformsOrTikTok(args);
+  const publishMinQuality = publishMinQualityFromArgs(args) ?? cfg.publish.minQuality;
+  const intervalMin = Math.max(0, flagNumber(args, '--interval-min') ?? 20);
+  const dryRun = args.includes('--dry-run');
+
+  const pipeline = createDefaultPipeline();
+  const isLocalFile = existsSync(target) && statSync(target).isFile();
+  const result = isLocalFile
+    ? await pipeline.runSource(sourceFromLocalFile(resolve(target)), opts)
+    : await pipeline.run(target, opts);
+
+  const publishable = result.clips
+    .filter((clip) => clip.renderedPath && clipQuality(clip) >= publishMinQuality)
+    .sort((a, b) => clipQuality(b) - clipQuality(a));
+
+  log.info(
+    {
+      creatorHandle,
+      source: result.source.id,
+      rendered: result.clips.length,
+      publishable: publishable.length,
+      platforms,
+      publishMinQuality,
+      intervalMin,
+      dryRun,
+    },
+    'campaign clipping complete',
+  );
+
+  if (publishable.length === 0) {
+    log.info('no publishable clips produced');
+    return 0;
+  }
+
+  if (dryRun) {
+    for (const clip of publishable) {
+      log.info(
+        {
+          path: clip.renderedPath,
+          quality: clipQuality(clip),
+          caption: clip.caption.descriptions?.tiktok ?? clip.caption.text,
+        },
+        'dry-run publish candidate',
+      );
+    }
+    return 0;
+  }
+
+  const publisher = createBrowserPublisher();
+  for (let index = 0; index < publishable.length; index++) {
+    const clip = publishable[index]!;
+    if (index > 0 && intervalMin > 0) {
+      const delayMs = intervalMin * 60 * 1000;
+      log.info(
+        {
+          minutes: intervalMin,
+          nextAt: new Date(Date.now() + delayMs).toISOString(),
+          remaining: publishable.length - index,
+        },
+        'waiting before next post',
+      );
+      await sleep(delayMs);
+    }
+
+    const caption = clip.caption.descriptions?.tiktok ?? clip.caption.text;
+    log.info(
+      {
+        index: index + 1,
+        total: publishable.length,
+        path: clip.renderedPath,
+        quality: clipQuality(clip),
+      },
+      'publishing clip',
+    );
+    const publishResult = await publisher.publishFile(clip.renderedPath!, caption, platforms);
+    for (const item of publishResult.results) {
+      log.info(
+        {
+          platform: item.platform,
+          status: item.status,
+          error: item.error,
+          screenshot: item.screenshot,
+        },
+        'publish result',
+      );
+    }
+    if (!publishResult.ok) {
+      log.error({ err: publishResult.error }, 'publish failed; continuing to next scheduled clip');
+    }
+  }
+  return 0;
 }
 
 async function run(args: string[]): Promise<number> {
@@ -349,6 +494,8 @@ function printHelp(): void {
       'Usage: clipper <command>',
       '',
       'Commands:',
+      '  @creator <url> Clip and post with attribution, spaced by 20 minutes',
+      '  campaign @creator <url> Same as @creator shorthand',
       '  run <url>     Clip a source now (--limit N, --min-score N)',
       '  add <url>     Enqueue a source URL for the worker',
       '  work          Run the queue worker',
@@ -373,6 +520,9 @@ async function main(): Promise<void> {
   switch (command) {
     case 'doctor':
       process.exitCode = await doctor();
+      break;
+    case 'campaign':
+      process.exitCode = await campaign(rest);
       break;
     case 'run':
       process.exitCode = await run(rest);
@@ -414,8 +564,12 @@ async function main(): Promise<void> {
       printHelp();
       break;
     default:
-      log.error({ command }, 'unknown command');
-      process.exitCode = 1;
+      if (command.startsWith('@')) {
+        process.exitCode = await campaign([command, ...rest]);
+      } else {
+        log.error({ command }, 'unknown command');
+        process.exitCode = 1;
+      }
   }
 }
 
