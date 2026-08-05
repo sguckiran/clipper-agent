@@ -50,6 +50,7 @@ const MANAGED_KEYS = [
   'CLIPPER_PUBLISH_PROFILE_DIR',
   'CLIPPER_PUBLISH_BROWSER_EXECUTABLE',
   'CLIPPER_PUBLISH_HEADLESS',
+  'CLIPPER_CREATOR_HANDLE',
   'CLIPPER_WEB_PASSWORD',
   'CLIPPER_WEB_PASSWORD_HASH',
   'CLIPPER_WEB_SESSION_SECRET',
@@ -239,6 +240,7 @@ describe('config', () => {
     process.env.CLIPPER_PUBLISH_PROFILE_DIR = '/profiles';
     process.env.CLIPPER_PUBLISH_BROWSER_EXECUTABLE = '/usr/bin/google-chrome';
     process.env.CLIPPER_PUBLISH_HEADLESS = 'true';
+    process.env.CLIPPER_CREATOR_HANDLE = '@krimoemp4';
     resetConfigCache();
     expect(getConfig().publish).toMatchObject({
       enabled: true,
@@ -248,6 +250,7 @@ describe('config', () => {
       profileDir: '/profiles',
       browserExecutable: '/usr/bin/google-chrome',
       headless: true,
+      creatorHandle: '@krimoemp4',
     });
   });
 

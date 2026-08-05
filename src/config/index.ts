@@ -155,6 +155,8 @@ const schema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+  // Optional @handle credited in upload descriptions, e.g. @krimoemp4.
+  CLIPPER_CREATOR_HANDLE: z.string().optional(),
 
   // Publishing — TikTok
   TIKTOK_CLIENT_KEY: z.string().optional(),
@@ -277,6 +279,8 @@ export interface Config {
     profileDir?: string;
     browserExecutable?: string;
     headless: boolean;
+    /** Optional creator/source handle to credit in platform descriptions. */
+    creatorHandle?: string;
     tiktok: { clientKey?: string; clientSecret?: string; accessToken?: string };
     instagram: { accessToken?: string; businessAccountId?: string };
     youtube: { clientId?: string; clientSecret?: string; refreshToken?: string };
@@ -450,6 +454,7 @@ export function getConfig(): Config {
       profileDir: env.CLIPPER_PUBLISH_PROFILE_DIR,
       browserExecutable: env.CLIPPER_PUBLISH_BROWSER_EXECUTABLE,
       headless: env.CLIPPER_PUBLISH_HEADLESS,
+      creatorHandle: env.CLIPPER_CREATOR_HANDLE?.trim() || undefined,
       tiktok: {
         clientKey: env.TIKTOK_CLIENT_KEY,
         clientSecret: env.TIKTOK_CLIENT_SECRET,

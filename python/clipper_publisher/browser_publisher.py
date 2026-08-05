@@ -182,6 +182,92 @@ def _wait_for_enabled(locator: Any, timeout_s: float = 60) -> Any:
     raise PublishNeedsHuman("publish control never became ready")
 
 
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", " ", value.replace("\u200b", "")).strip()
+
+
+def _caption_parts(caption: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    cursor = 0
+    for match in re.finditer(r"#[a-zA-Z0-9_]+", caption):
+        if match.start() > cursor:
+            parts.append(("text", caption[cursor : match.start()]))
+        parts.append(("hashtag", match.group(0)))
+        cursor = match.end()
+    if cursor < len(caption):
+        parts.append(("text", caption[cursor:]))
+    return parts
+
+
+def _select_tiktok_hashtag_suggestion(page: Any, hashtag: str) -> bool:
+    escaped = re.escape(hashtag)
+    candidates = [
+        page.get_by_role("option", name=re.compile(rf"^{escaped}\b", re.I)),
+        page.locator(f"[role='option']:has-text('{hashtag}')"),
+        page.locator(f"[data-e2e*='hashtag' i]:has-text('{hashtag}')"),
+        page.locator(f"div:has-text('{hashtag}')"),
+    ]
+    for locator in candidates:
+        try:
+            for index in range(min(locator.count(), 8)):
+                candidate = locator.nth(index)
+                if not candidate.is_visible():
+                    continue
+                box = candidate.bounding_box()
+                # Avoid clicking the text inside the editor itself. TikTok's suggestion rows sit
+                # under the editor and are much taller than a single typed hashtag span.
+                if box and box.get("height", 0) < 24:
+                    continue
+                candidate.click()
+                page.wait_for_timeout(250)
+                return True
+        except Exception:
+            continue
+
+    return False
+
+
+def _type_tiktok_caption(page: Any, caption: str) -> None:
+    for kind, text in _caption_parts(caption):
+        if not text:
+            continue
+        page.keyboard.type(text, delay=5)
+        if kind == "hashtag":
+            page.wait_for_timeout(350)
+            _select_tiktok_hashtag_suggestion(page, text)
+
+
+def _set_tiktok_caption(page: Any, caption: str, media_path: Path) -> None:
+    caption_box = _first_visible(
+        page,
+        [
+            "[data-e2e='caption_container'] .public-DraftEditor-content[contenteditable='true']",
+            "[data-e2e='caption_container'] [contenteditable='true'][role='combobox']",
+            "[data-e2e='caption_container'] [contenteditable='true']",
+            "div[contenteditable='true'][role='combobox']",
+        ],
+        timeout_s=30,
+    )
+
+    try:
+        caption_box.click(position={"x": 10, "y": 10})
+        page.keyboard.press("Control+A")
+        page.keyboard.press("Backspace")
+        _type_tiktok_caption(page, caption)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(500)
+    except Exception as exc:
+        raise PublishNeedsHuman("TikTok description field could not be updated") from exc
+
+    actual = _normalize_text(caption_box.inner_text(timeout=2000))
+    expected = _normalize_text(caption)
+    filename_stem = media_path.stem.lower()
+    if expected[:32].lower() not in actual.lower():
+        raise PublishNeedsHuman("TikTok description paste did not stick")
+    if filename_stem in actual.lower() and filename_stem not in expected.lower():
+        raise PublishNeedsHuman("TikTok description still contains the uploaded filename")
+
+
 def _wait_for_publish_result(
     page: Any,
     success_patterns: list[str],
@@ -213,10 +299,18 @@ def _dismiss_tiktok_tour(page: Any) -> None:
         overlay = page.locator("[data-test-id='overlay']")
         if not _visible(overlay):
             return
-        got_it = _visible_match(page.get_by_role("button", name="Got it", exact=True))
-        if got_it is None:
-            raise PublishNeedsHuman("TikTok onboarding overlay is blocking the Post button")
-        got_it.click()
+        dismiss_button = (
+            _visible_match(page.get_by_role("button", name="Got it", exact=True))
+            or _visible_match(page.get_by_role("button", name="Turn on", exact=True))
+            or _visible_match(page.get_by_role("button", name="Cancel", exact=True))
+        )
+        if dismiss_button is None:
+            close_button = _visible_match(page.locator("[aria-label='Close'], button:has-text('×')"))
+            if close_button is None:
+                raise PublishNeedsHuman("TikTok onboarding overlay is blocking the Post button")
+            close_button.click()
+        else:
+            dismiss_button.click()
         page.wait_for_timeout(400)
     if _visible(page.locator("[data-test-id='overlay']")):
         raise PublishNeedsHuman("TikTok onboarding tour could not be dismissed")
@@ -282,10 +376,7 @@ def _publish_tiktok(page: Any, media_path: Path, caption: str) -> None:
     if not _visible(uploaded):
         raise PublishNeedsHuman("TikTok did not confirm that the video uploaded")
 
-    caption_box = page.locator("[data-e2e='caption_container'] [contenteditable='true'][role='combobox']")
-    if not _visible(caption_box):
-        raise PublishNeedsHuman("TikTok description field was not found")
-    caption_box.fill(caption)
+    _set_tiktok_caption(page, caption, media_path)
 
     ai_switch = page.locator(
         "[data-e2e='aigc_container'] input[role='switch'], "

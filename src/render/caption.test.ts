@@ -7,8 +7,10 @@ import {
   fallbackDescriptions,
   fallbackCaption,
   LlmCaptionWriter,
+  normalizeCreatorHandle,
   parseCaption,
   parseCaptionPayload,
+  withCreatorAttribution,
 } from './caption.js';
 
 const candidate: ClipCandidate = {
@@ -69,6 +71,25 @@ describe('fallbackDescriptions', () => {
     expect(descriptions?.tiktok).toMatch(/#omegle/);
     expect(descriptions?.instagram).toMatch(/#streamer/);
   });
+
+  it('adds creator attribution before hashtags when configured', () => {
+    const descriptions = fallbackDescriptions(candidate, 'watch this', '@krimoemp4');
+    expect(descriptions.tiktok).toContain('Credit: @krimoemp4');
+    expect(descriptions.tiktok).toMatch(/Credit: @krimoemp4\n\n#fyp/);
+  });
+});
+
+describe('creator attribution', () => {
+  it('normalizes bare creator handles', () => {
+    expect(normalizeCreatorHandle('krimoemp4')).toBe('@krimoemp4');
+    expect(normalizeCreatorHandle('@krimoemp4')).toBe('@krimoemp4');
+  });
+
+  it('does not duplicate an existing credit', () => {
+    expect(withCreatorAttribution('watch this\n\nCredit: @krimoemp4', '@krimoemp4')).toBe(
+      'watch this\n\nCredit: @krimoemp4',
+    );
+  });
 });
 
 describe('captionInput', () => {
@@ -112,6 +133,20 @@ describe('LlmCaptionWriter', () => {
         instagram: 'this got wild\n\n#reels #streamer',
       },
     });
+  });
+
+  it('adds configured creator credit to model descriptions', async () => {
+    const chat: ChatClient = {
+      complete: vi
+        .fn()
+        .mockResolvedValue(
+          '{"caption":"He did NOT just say that","tiktok":"this got wild\\n\\n#fyp #viral","instagram":"this got wild\\n\\n#reels"}',
+        ),
+    };
+    const writer = new LlmCaptionWriter({ chat, model: 'tiny', creatorHandle: '@krimoemp4' });
+    const result = await writer.write(candidate);
+    expect(result.descriptions?.tiktok).toContain('Credit: @krimoemp4');
+    expect(result.descriptions?.instagram).toContain('Credit: @krimoemp4');
   });
 
   it('fills missing platform descriptions with hashtag fallbacks', async () => {

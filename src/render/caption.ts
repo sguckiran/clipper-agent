@@ -104,15 +104,41 @@ export function normalizeDescription(value: string | undefined): string | undefi
   return text && text.length > 0 ? text : undefined;
 }
 
+export function normalizeCreatorHandle(value: string | undefined): string | undefined {
+  const raw = value?.trim();
+  if (!raw) return undefined;
+  const first = raw.split(/[\s,]+/)[0] ?? '';
+  const handle = first.replace(/^@+/, '').replace(/[^a-zA-Z0-9._]/g, '');
+  return handle.length > 0 ? `@${handle}` : undefined;
+}
+
+export function withCreatorAttribution(
+  description: string,
+  creatorHandle: string | undefined,
+): string {
+  const handle = normalizeCreatorHandle(creatorHandle);
+  if (!handle) return description;
+  if (description.toLowerCase().includes(handle.toLowerCase())) return description;
+
+  const blocks = description.split(/\n\n/);
+  const last = blocks.at(-1);
+  const credit = `Credit: ${handle}`;
+  if (last && /#[a-z0-9_]+/i.test(last) && blocks.length > 1) {
+    return [...blocks.slice(0, -1), credit, last].join('\n\n');
+  }
+  return `${description}\n\n${credit}`;
+}
+
 export function fallbackDescriptions(
   candidate: ClipCandidate,
   title = fallbackCaption(candidate),
+  creatorHandle?: string,
 ): PlatformDescriptions {
   const tags = candidateHashtags(candidate);
   const setup = title.endsWith('?') || title.endsWith('!') ? title : `${title} 😂`;
   return {
-    tiktok: `${setup}\n\n${tags.slice(0, 7).join(' ')}`,
-    instagram: `${setup}\n\n${tags.slice(0, 8).join(' ')}`,
+    tiktok: withCreatorAttribution(`${setup}\n\n${tags.slice(0, 7).join(' ')}`, creatorHandle),
+    instagram: withCreatorAttribution(`${setup}\n\n${tags.slice(0, 8).join(' ')}`, creatorHandle),
   };
 }
 
@@ -154,16 +180,20 @@ export const CAPTION_SYSTEM =
 export interface CaptionWriterOptions {
   chat: ChatClient;
   model?: string;
+  creatorHandle?: string;
 }
 
 export class LlmCaptionWriter implements CaptionWriter {
   private readonly chat: ChatClient;
   private readonly model: string;
+  private readonly creatorHandle?: string;
   private readonly log = createLogger('caption');
 
   constructor(opts: CaptionWriterOptions) {
     this.chat = opts.chat;
-    this.model = opts.model ?? getConfig().llm.captionModel;
+    const cfg = getConfig();
+    this.model = opts.model ?? cfg.llm.captionModel;
+    this.creatorHandle = normalizeCreatorHandle(opts.creatorHandle ?? cfg.publish.creatorHandle);
   }
 
   async write(candidate: ClipCandidate): Promise<Caption> {
@@ -177,12 +207,18 @@ export class LlmCaptionWriter implements CaptionWriter {
       );
       const payload = parseCaptionPayload(content);
       if (payload.caption.length > 0) {
-        const fallback = fallbackDescriptions(candidate, payload.caption);
+        const fallback = fallbackDescriptions(candidate, payload.caption, this.creatorHandle);
         return {
           text: payload.caption,
           descriptions: {
-            tiktok: payload.tiktok ?? fallback.tiktok,
-            instagram: payload.instagram ?? fallback.instagram,
+            tiktok: withCreatorAttribution(
+              payload.tiktok ?? fallback.tiktok ?? payload.caption,
+              this.creatorHandle,
+            ),
+            instagram: withCreatorAttribution(
+              payload.instagram ?? fallback.instagram ?? payload.caption,
+              this.creatorHandle,
+            ),
           },
         };
       }
@@ -191,7 +227,7 @@ export class LlmCaptionWriter implements CaptionWriter {
       this.log.warn({ id: candidate.id, err: (err as Error).message }, 'caption failed; fallback');
     }
     const text = fallbackCaption(candidate);
-    return { text, descriptions: fallbackDescriptions(candidate, text) };
+    return { text, descriptions: fallbackDescriptions(candidate, text, this.creatorHandle) };
   }
 }
 

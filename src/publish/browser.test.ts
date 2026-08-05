@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resetConfigCache } from '../config/index.js';
 import { BrowserPublisher, defaultPublisherScriptPath, resolvePythonCommand } from './browser.js';
 
-const MANAGED_KEYS = ['CLIPPER_DATA_DIR', 'CLIPPER_PUBLISH_PLATFORMS'];
+const MANAGED_KEYS = ['CLIPPER_DATA_DIR', 'CLIPPER_PUBLISH_PLATFORMS', 'CLIPPER_CREATOR_HANDLE'];
 
 describe('BrowserPublisher', () => {
   const saved: Record<string, string | undefined> = {};
@@ -66,6 +66,36 @@ describe('BrowserPublisher', () => {
     expect(response).toEqual({
       ok: true,
       results: [{ platform: 'tiktok', status: 'published' }],
+    });
+  });
+
+  it('adds creator attribution to direct publish captions when configured', async () => {
+    process.env.CLIPPER_CREATOR_HANDLE = '@krimoemp4';
+    resetConfigCache();
+    const dir = await mkdtemp(join(tmpdir(), 'clipper-publisher-'));
+    const fakeScript = join(dir, 'fake-publisher.mjs');
+    await writeFile(
+      fakeScript,
+      [
+        "import { stdin } from 'node:process';",
+        "let raw = '';",
+        'for await (const chunk of stdin) raw += chunk;',
+        'const payload = JSON.parse(raw);',
+        'console.log(JSON.stringify({ ok: true, results: [{ platform: "tiktok", status: "published", caption: payload.caption }] }));',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const publisher = new BrowserPublisher({
+      python: process.execPath,
+      scriptPath: fakeScript,
+      dataDir: dir,
+    });
+
+    const response = await publisher.publishFile('C:\\clips\\one.mp4', 'watch this', ['tiktok']);
+
+    expect(response.results[0]).toMatchObject({
+      caption: 'watch this\n\nCredit: @krimoemp4',
     });
   });
 });

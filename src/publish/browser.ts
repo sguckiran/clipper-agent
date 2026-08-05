@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { getConfig } from '../config/index.js';
 import { dataPaths } from '../core/paths.js';
 import type { Clip, PublishTarget } from '../core/types.js';
+import { withCreatorAttribution } from '../render/caption.js';
 
 export type BrowserPublishTarget = Extract<PublishTarget, 'tiktok' | 'instagram'>;
 
@@ -102,10 +103,11 @@ export class BrowserPublisher {
     caption: string,
     platforms?: BrowserPublishTarget[],
   ): Promise<BrowserPublishResponse> {
+    const creatorHandle = getConfig().publish.creatorHandle;
     return this.call({
       action: 'publish',
       media_path: mediaPath,
-      caption,
+      caption: withCreatorAttribution(caption, creatorHandle),
       platforms: platforms ?? configuredTargets(),
     });
   }
