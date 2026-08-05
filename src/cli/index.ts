@@ -293,7 +293,7 @@ async function appendOutro(
   ]);
 }
 
-async function prepareLocalClip(path: string, opts: { outroPath?: string; targetSec: number }): Promise<string> {
+async function preparePostClip(path: string, opts: { outroPath?: string; targetSec: number }): Promise<string> {
   if (path.toLowerCase().endsWith('.outro.mp4')) return path;
   const duration = await probeDurationSec(path);
   if (!opts.outroPath || duration === undefined || duration >= opts.targetSec) return path;
@@ -343,7 +343,7 @@ async function postLocal(args: string[]): Promise<number> {
   const sourceClips = localClipFiles(targets).slice(skip);
   const clips = dryRun
     ? sourceClips
-    : await Promise.all(sourceClips.map((path) => prepareLocalClip(path, { outroPath, targetSec })));
+    : await Promise.all(sourceClips.map((path) => preparePostClip(path, { outroPath, targetSec })));
   const markerDir = join(dataPaths().work, 'published-local');
   const markerPath = join(markerDir, 'posted.json');
   const logPath = join(markerDir, 'publish-log.jsonl');
@@ -476,7 +476,7 @@ async function campaign(args: string[]): Promise<number> {
   const target = positional[1];
   if (!creatorHandle?.startsWith('@') || !target) {
     log.error(
-      'usage: clipper @creator <url|file> [--limit N] [--min-score N] [--publish-min-quality N] [--interval-min 20] [--layout auto] [--panels x,y,w,h;x,y,w,h] [--platforms tiktok,instagram] [--dry-run]',
+      'usage: clipper @creator <url|file> [--limit N] [--min-score N] [--publish-min-quality N] [--interval-min 20] [--target-sec 60] [--outro outro.mp4] [--layout auto] [--panels x,y,w,h;x,y,w,h] [--platforms tiktok,instagram] [--dry-run]',
     );
     log.error('   or: clipper campaign @creator <url|file> ...');
     return 1;
@@ -490,6 +490,8 @@ async function campaign(args: string[]): Promise<number> {
   const platforms = publishPlatformsOrTikTok(args);
   const publishMinQuality = publishMinQualityFromArgs(args) ?? cfg.publish.minQuality;
   const intervalMin = Math.max(0, flagNumber(args, '--interval-min') ?? 20);
+  const targetSec = Math.max(60, flagNumber(args, '--target-sec') ?? 60);
+  const outroPath = flagString(args, '--outro') ?? defaultOutroPath();
   const dryRun = args.includes('--dry-run');
 
   const pipeline = createDefaultPipeline();
@@ -501,6 +503,14 @@ async function campaign(args: string[]): Promise<number> {
   const publishable = result.clips
     .filter((clip) => clip.renderedPath && clipQuality(clip) >= publishMinQuality)
     .sort((a, b) => clipQuality(b) - clipQuality(a));
+  const postFiles = await Promise.all(
+    publishable.map(async (clip) => ({
+      clip,
+      path: dryRun
+        ? clip.renderedPath!
+        : await preparePostClip(clip.renderedPath!, { outroPath, targetSec }),
+    })),
+  );
 
   log.info(
     {
@@ -511,6 +521,8 @@ async function campaign(args: string[]): Promise<number> {
       platforms,
       publishMinQuality,
       intervalMin,
+      targetSec,
+      outroPath,
       layout: renderPreset.layout ?? cfg.render.layout,
       panels: renderPreset.panels ? cfg.render.panels.length : 0,
       dryRun,
@@ -524,10 +536,28 @@ async function campaign(args: string[]): Promise<number> {
   }
 
   if (dryRun) {
-    for (const clip of publishable) {
+    for (const { clip, path } of postFiles) {
+      const duration = await probeDurationSec(path);
+      const outroDuration = outroPath ? await probeDurationSec(outroPath) : undefined;
+      const wouldAppendOutro =
+        Boolean(outroPath) &&
+        !path.toLowerCase().endsWith('.outro.mp4') &&
+        duration !== undefined &&
+        duration < targetSec;
+      const repeatOutro =
+        wouldAppendOutro && outroDuration !== undefined && outroDuration > 0
+          ? Math.max(1, Math.ceil((targetSec - duration) / outroDuration))
+          : 0;
       log.info(
         {
-          path: clip.renderedPath,
+          path,
+          durationSec: duration,
+          wouldAppendOutro,
+          repeatOutro,
+          stagedDurationSec:
+            duration !== undefined && outroDuration !== undefined
+              ? Math.min(targetSec, duration + repeatOutro * outroDuration)
+              : undefined,
           quality: clipQuality(clip),
           caption: clip.caption.descriptions?.tiktok ?? clip.caption.text,
         },
@@ -538,15 +568,15 @@ async function campaign(args: string[]): Promise<number> {
   }
 
   const publisher = createBrowserPublisher();
-  for (let index = 0; index < publishable.length; index++) {
-    const clip = publishable[index]!;
+  for (let index = 0; index < postFiles.length; index++) {
+    const { clip, path } = postFiles[index]!;
     if (index > 0 && intervalMin > 0) {
       const delayMs = intervalMin * 60 * 1000;
       log.info(
         {
           minutes: intervalMin,
           nextAt: new Date(Date.now() + delayMs).toISOString(),
-          remaining: publishable.length - index,
+          remaining: postFiles.length - index,
         },
         'waiting before next post',
       );
@@ -557,13 +587,13 @@ async function campaign(args: string[]): Promise<number> {
     log.info(
       {
         index: index + 1,
-        total: publishable.length,
-        path: clip.renderedPath,
+        total: postFiles.length,
+        path,
         quality: clipQuality(clip),
       },
       'publishing clip',
     );
-    const publishResult = await publisher.publishFile(clip.renderedPath!, caption, platforms);
+    const publishResult = await publisher.publishFile(path, caption, platforms);
     for (const item of publishResult.results) {
       log.info(
         {
