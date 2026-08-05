@@ -132,6 +132,8 @@ function positionalArgs(args: string[]): string[] {
     '--min-score',
     '--publish-min-quality',
     '--interval-min',
+    '--layout',
+    '--panels',
     '--platforms',
     '--caption',
     '--out-dir',
@@ -165,19 +167,36 @@ function publishPlatformsOrTikTok(args: string[]): BrowserPublishTarget[] {
   return publishPlatformsFromArgs(args) ?? ['tiktok'];
 }
 
+function applyCampaignRenderPreset(
+  args: string[],
+  creatorHandle: string,
+): { layout?: string; panels?: string } {
+  const explicitLayout = flagString(args, '--layout');
+  const explicitPanels = flagString(args, '--panels');
+  const normalizedHandle = creatorHandle.trim().toLowerCase();
+  const krimoePanels = '34,74,600,448;634,74,600,448';
+
+  const layout = explicitLayout ?? (normalizedHandle === '@krimoemp4' ? 'auto' : undefined);
+  const panels = explicitPanels ?? (normalizedHandle === '@krimoemp4' ? krimoePanels : undefined);
+  if (layout) process.env.CLIPPER_LAYOUT = layout;
+  if (panels) process.env.CLIPPER_PANELS = panels;
+  return { layout, panels };
+}
+
 async function campaign(args: string[]): Promise<number> {
   const positional = positionalArgs(args);
   const creatorHandle = positional[0];
   const target = positional[1];
   if (!creatorHandle?.startsWith('@') || !target) {
     log.error(
-      'usage: clipper @creator <url|file> [--limit N] [--min-score N] [--publish-min-quality N] [--interval-min 20] [--platforms tiktok,instagram] [--dry-run]',
+      'usage: clipper @creator <url|file> [--limit N] [--min-score N] [--publish-min-quality N] [--interval-min 20] [--layout auto] [--panels x,y,w,h;x,y,w,h] [--platforms tiktok,instagram] [--dry-run]',
     );
     log.error('   or: clipper campaign @creator <url|file> ...');
     return 1;
   }
 
   process.env.CLIPPER_CREATOR_HANDLE = creatorHandle;
+  const renderPreset = applyCampaignRenderPreset(args, creatorHandle);
   resetConfigCache();
   const cfg = getConfig();
   const opts = detectOptionsFromArgs(args);
@@ -205,6 +224,8 @@ async function campaign(args: string[]): Promise<number> {
       platforms,
       publishMinQuality,
       intervalMin,
+      layout: renderPreset.layout ?? cfg.render.layout,
+      panels: renderPreset.panels ? cfg.render.panels.length : 0,
       dryRun,
     },
     'campaign clipping complete',
